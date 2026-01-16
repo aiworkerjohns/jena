@@ -60,7 +60,7 @@ public class TestFacetedResults {
         // Create some test hits
         Node subject1 = NodeFactory.createURI("http://example.org/doc1");
         Node subject2 = NodeFactory.createURI("http://example.org/doc2");
-        Node literal = NodeFactory.createLiteral("test");
+        Node literal = NodeFactory.createLiteralString("test");
         
         List<TextHit> hits = Arrays.asList(
             new TextHit(subject1, 1.0f, literal),

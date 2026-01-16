@@ -25,6 +25,7 @@ import java.io.IOException ;
 import java.util.*;
 import java.util.Map.Entry ;
 import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.jena.datatypes.RDFDatatype ;
@@ -812,5 +813,134 @@ public class TextIndexLucene implements TextIndex {
 
     private Node entryToNode(String v) {
         return NodeFactory.createLiteralString(v) ;
+    }
+
+    /**
+     * Query with faceting support.
+     * Performs a text search and additionally computes facet counts for specified fields.
+     *
+     * @param indexReader The Lucene index reader
+     * @param props RDF properties to search
+     * @param qs Query string
+     * @param textQueryExtender Optional query extender
+     * @param graphURI Graph URI filter (optional)
+     * @param facetFields List of field names to compute facets for
+     * @param maxFacetValues Maximum number of facet values to return per field
+     * @return FacetedTextResults containing both hits and facet counts
+     */
+    public FacetedTextResults queryWithFacets$(
+            IndexReader indexReader,
+            List<Resource> props,
+            String qs,
+            UnaryOperator<Query> textQueryExtender,
+            String graphURI,
+            List<String> facetFields,
+            int maxFacetValues)
+            throws ParseException, IOException {
+
+        // Step 1: Execute the standard query (reuse existing logic)
+        List<String> textFields = new ArrayList<>();
+
+        // Build text field list from properties
+        for (Resource prop : props) {
+            String field = docDef.getField(prop.asNode());
+            if (field != null) {
+                textFields.add(field);
+            }
+        }
+        if (textFields.isEmpty()) {
+            textFields.add(docDef.getPrimaryField());
+        }
+
+        // Parse and build query
+        Query textQuery = parseQuery(qs, queryAnalyzer);
+        Query query = textQueryExtender.apply(textQuery);
+
+        // Set limit
+        int limit = MAX_N;
+
+        // Execute search
+        IndexSearcher indexSearcher = new IndexSearcher(indexReader);
+        TopDocs topDocs = indexSearcher.search(query, limit);
+
+        // Step 2: Collect facets from matching documents
+        Map<String, Map<String, Long>> facetCounts = new HashMap<>();
+
+        for (ScoreDoc sd : topDocs.scoreDocs) {
+            Document doc = indexSearcher.storedFields().document(sd.doc);
+
+            // For each requested facet field, extract value and count it
+            for (String facetField : facetFields) {
+                String value = doc.get(facetField);
+                if (value != null && !value.isEmpty()) {
+                    facetCounts
+                        .computeIfAbsent(facetField, k -> new HashMap<>())
+                        .merge(value, 1L, Long::sum);
+                }
+            }
+        }
+
+        // Step 3: Convert facet counts to sorted FacetValue lists
+        Map<String, List<FacetValue>> facets = processFacetCounts(facetCounts, maxFacetValues);
+
+        // Step 4: Process hits using existing logic
+        List<TextHit> hits = simpleResults(topDocs.scoreDocs, indexSearcher, query, textFields);
+
+        return new FacetedTextResults(hits, facets, topDocs.totalHits.value());
+    }
+
+    /**
+     * Helper method to convert raw facet counts into sorted FacetValue lists.
+     *
+     * @param facetCounts Map of field -> (value -> count)
+     * @param maxValues Maximum values to return per field
+     * @return Map of field -> List<FacetValue> (sorted by count descending)
+     */
+    private Map<String, List<FacetValue>> processFacetCounts(
+            Map<String, Map<String, Long>> facetCounts,
+            int maxValues) {
+
+        Map<String, List<FacetValue>> result = new HashMap<>();
+
+        for (Map.Entry<String, Map<String, Long>> fieldEntry : facetCounts.entrySet()) {
+            String fieldName = fieldEntry.getKey();
+            Map<String, Long> counts = fieldEntry.getValue();
+
+            // Convert to FacetValue list and sort by count (descending)
+            List<FacetValue> facetValues = counts.entrySet().stream()
+                .map(e -> new FacetValue(e.getKey(), e.getValue()))
+                .sorted((a, b) -> Long.compare(b.getCount(), a.getCount()))  // Descending
+                .limit(maxValues)
+                .collect(Collectors.toList());
+
+            result.put(fieldName, facetValues);
+        }
+
+        return result;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * Implementation of faceted text search for Lucene index.
+     */
+    @Override
+    public FacetedTextResults queryWithFacets(List<Resource> props, String qs, String graphURI,
+            String lang, int limit, List<String> facetFields, int maxFacetValues) {
+        try (IndexReader indexReader = DirectoryReader.open(directory)) {
+            return queryWithFacets$(
+                indexReader,
+                props,
+                qs,
+                UnaryOperator.identity(),
+                graphURI,
+                facetFields,
+                maxFacetValues
+            );
+        } catch (ParseException ex) {
+            throw new TextIndexParseException(qs, ex.getMessage());
+        } catch (Exception ex) {
+            throw new TextIndexException("queryWithFacets", ex);
+        }
     }
 }

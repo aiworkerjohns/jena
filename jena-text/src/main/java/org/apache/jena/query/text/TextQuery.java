@@ -61,6 +61,15 @@ public class TextQuery
                     return new TextQueryPF() ;
                 }
             });
+
+            // Register faceted query property function
+            PropertyFunctionRegistry.get().put("http://jena.apache.org/text#queryWithFacets", new PropertyFunctionFactory() {
+                @Override
+                public PropertyFunction create(String uri) {
+                    return new TextQueryFacetsPF() ;
+                }
+            });
+
             JenaSystem.logLifecycle("TextQuery.init - finish") ;
             // Register indirections.
             InitTextCmds.cmds();
