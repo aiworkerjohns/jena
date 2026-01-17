@@ -46,6 +46,15 @@ import org.apache.lucene.analysis.core.KeywordAnalyzer ;
 import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper ;
 import org.apache.lucene.analysis.standard.StandardAnalyzer ;
 import org.apache.lucene.document.*;
+import org.apache.lucene.facet.FacetResult;
+import org.apache.lucene.facet.Facets;
+import org.apache.lucene.facet.FacetsCollector;
+import org.apache.lucene.facet.FacetsConfig;
+import org.apache.lucene.facet.LabelAndValue;
+import org.apache.lucene.facet.sortedset.DefaultSortedSetDocValuesReaderState;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetCounts;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetField;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesReaderState;
 import org.apache.lucene.index.*;
 import org.apache.lucene.queryparser.classic.ParseException ;
 import org.apache.lucene.queryparser.classic.QueryParser ;
@@ -95,6 +104,8 @@ public class TextIndexLucene implements TextIndex {
     private final boolean          ignoreIndexErrors ;
 
     private Map<String, Analyzer> multilingualQueryAnalyzers = new HashMap<>();
+    private final List<String> facetFields;
+    private final FacetsConfig facetsConfig;
 
     // The IndexWriter can't be final because we may have to recreate it if rollback() is called.
     // However, it needs to be volatile in case the next write transaction is on a different thread,
@@ -159,6 +170,17 @@ public class TextIndexLucene implements TextIndex {
         this.ftTextStoredNoIndex.freeze();
         if (config.isValueStored() && docDef.getLangField() == null)
             log.warn("Values stored but langField not set. Returned values will not have language tag or datatype.");
+
+        // Initialize facet fields configuration
+        this.facetFields = new ArrayList<>(config.getFacetFields());
+        this.facetsConfig = new FacetsConfig();
+        for (String facetField : this.facetFields) {
+            // Configure each facet field to be multi-valued (multiple values per document allowed)
+            facetsConfig.setMultiValued(facetField, true);
+        }
+        if (!this.facetFields.isEmpty()) {
+            log.info("Faceting enabled for fields: {}", this.facetFields);
+        }
 
         openIndexWriter();
     }
@@ -289,7 +311,9 @@ public class TextIndexLucene implements TextIndex {
     protected void addDocument(Entity entity) throws IOException {
         Document doc = doc(entity) ;
         try {
-            indexWriter.addDocument(doc) ;
+            // If faceting is enabled, build the document with facet fields properly indexed
+            Document indexDoc = facetFields.isEmpty() ? doc : facetsConfig.build(doc);
+            indexWriter.addDocument(indexDoc) ;
         } catch (Exception ex) {
             log.error("Error adding {} message: {}", doc, ex.getMessage());
             if (ignoreIndexErrors) {
@@ -343,6 +367,10 @@ public class TextIndexLucene implements TextIndex {
             String value = (String) e.getValue();
             FieldType ft = (docDef.getNoIndex(field)) ? ftTextStoredNoIndex : ftText ;
             doc.add( new Field(field, value, ft) );
+            // Add SortedSetDocValuesFacetField for fields configured for faceting
+            if (facetFields.contains(field) && value != null && !value.isEmpty()) {
+                doc.add(new SortedSetDocValuesFacetField(field, value));
+            }
             if (langField != null) {
                 String lang = entity.getLanguage();
                 RDFDatatype datatype = entity.getDatatype();
@@ -942,5 +970,99 @@ public class TextIndexLucene implements TextIndex {
         } catch (Exception ex) {
             throw new TextIndexException("queryWithFacets", ex);
         }
+    }
+
+    /**
+     * Get facet counts using native Lucene SortedSetDocValues faceting.
+     * This is efficient O(1) facet counting that doesn't iterate through documents.
+     *
+     * @param facetFieldsToQuery List of field names to get facet counts for
+     * @param maxValues Maximum number of facet values to return per field
+     * @return Map of field name to list of FacetValue (value + count)
+     */
+    public Map<String, List<FacetValue>> getFacetCounts(List<String> facetFieldsToQuery, int maxValues) {
+        return getFacetCounts(null, facetFieldsToQuery, maxValues);
+    }
+
+    /**
+     * Get facet counts using native Lucene SortedSetDocValues faceting,
+     * optionally filtered by a search query.
+     *
+     * @param queryString Optional search query to filter documents (null for all documents)
+     * @param facetFieldsToQuery List of field names to get facet counts for
+     * @param maxValues Maximum number of facet values to return per field
+     * @return Map of field name to list of FacetValue (value + count)
+     */
+    public Map<String, List<FacetValue>> getFacetCounts(String queryString, List<String> facetFieldsToQuery, int maxValues) {
+        Map<String, List<FacetValue>> result = new HashMap<>();
+
+        if (facetFieldsToQuery == null || facetFieldsToQuery.isEmpty()) {
+            return result;
+        }
+
+        try {
+            IndexReader indexReader = DirectoryReader.open(directory);
+            try {
+                IndexSearcher searcher = new IndexSearcher(indexReader);
+
+                // Create reader state for SortedSetDocValues faceting
+                // Lucene 10 requires FacetsConfig parameter
+                SortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(indexReader, facetsConfig);
+
+                Facets facets;
+                if (queryString == null || queryString.isEmpty()) {
+                    // For "open facets" (no search query), use the simpler constructor
+                    // This is equivalent to MatchAllDocsQuery but faster
+                    facets = new SortedSetDocValuesFacetCounts(state);
+                } else {
+                    // When filtering by query, use FacetsCollector
+                    Query query = parseQuery(queryString, queryAnalyzer);
+                    FacetsCollector fc = new FacetsCollector();
+                    searcher.search(query, fc);
+                    facets = new SortedSetDocValuesFacetCounts(state, fc);
+                }
+
+                // Extract results for each requested field
+                for (String field : facetFieldsToQuery) {
+                    List<FacetValue> fieldFacets = new ArrayList<>();
+                    try {
+                        FacetResult facetResult = facets.getTopChildren(maxValues, field);
+                        if (facetResult != null && facetResult.labelValues != null) {
+                            for (LabelAndValue lv : facetResult.labelValues) {
+                                fieldFacets.add(new FacetValue(lv.label, lv.value.longValue()));
+                            }
+                        }
+                    } catch (IllegalArgumentException e) {
+                        // Field not found or no facet data - return empty list
+                        log.debug("No facet data for field '{}': {}", field, e.getMessage());
+                    }
+                    result.put(field, fieldFacets);
+                }
+            } finally {
+                indexReader.close();
+            }
+        } catch (IOException ex) {
+            throw new TextIndexException("getFacetCounts", ex);
+        } catch (ParseException ex) {
+            throw new TextIndexParseException(queryString, ex.getMessage());
+        }
+
+        return result;
+    }
+
+    /**
+     * Check if faceting is enabled for any fields.
+     * @return true if at least one field is configured for faceting
+     */
+    public boolean isFacetingEnabled() {
+        return !facetFields.isEmpty();
+    }
+
+    /**
+     * Get the list of fields configured for faceting.
+     * @return unmodifiable list of facet field names
+     */
+    public List<String> getFacetFields() {
+        return Collections.unmodifiableList(facetFields);
     }
 }

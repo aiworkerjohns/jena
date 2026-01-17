@@ -189,6 +189,42 @@ public class TextIndexLuceneAssembler extends AssemblerBase {
                 ignoreIndexErrs = iieNode.asLiteral().getBoolean();
             }
 
+            // Parse facet fields (list of field names to enable native faceting on)
+            java.util.List<String> facetFields = new java.util.ArrayList<>();
+            Statement facetFieldsStatement = root.getProperty(pFacetFields);
+            if (null != facetFieldsStatement) {
+                RDFNode ffNode = facetFieldsStatement.getObject();
+                if (ffNode.isLiteral()) {
+                    // Single field name
+                    facetFields.add(ffNode.asLiteral().getString());
+                } else if (ffNode.isResource()) {
+                    // List of field names
+                    Resource list = ffNode.asResource();
+                    org.apache.jena.rdf.model.StmtIterator iter = list.listProperties();
+                    while (iter.hasNext()) {
+                        Statement stmt = iter.next();
+                        if (org.apache.jena.vocabulary.RDF.first.equals(stmt.getPredicate())) {
+                            RDFNode item = stmt.getObject();
+                            if (item.isLiteral()) {
+                                facetFields.add(item.asLiteral().getString());
+                            }
+                        }
+                    }
+                    // Also handle RDF list properly
+                    try {
+                        org.apache.jena.rdf.model.RDFList rdfList = list.as(org.apache.jena.rdf.model.RDFList.class);
+                        facetFields.clear();
+                        for (RDFNode item : rdfList.asJavaList()) {
+                            if (item.isLiteral()) {
+                                facetFields.add(item.asLiteral().getString());
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Not a proper RDF list, use what we found
+                    }
+                }
+            }
+
             // use query cache by default
             boolean cacheQueries = true;
             Statement cacheQueriesStatement = root.getProperty(pCacheQueries);
@@ -210,6 +246,7 @@ public class TextIndexLuceneAssembler extends AssemblerBase {
             config.setMaxBasicQueries(maxBasicQueries);
             config.setValueStored(storeValues);
             config.setIgnoreIndexErrors(ignoreIndexErrs);
+            config.setFacetFields(facetFields);
             docDef.setCacheQueries(cacheQueries);
 
             return TextDatasetFactory.createLuceneIndex(directory, config) ;

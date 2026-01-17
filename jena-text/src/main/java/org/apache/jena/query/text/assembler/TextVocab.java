@@ -44,6 +44,7 @@ public class TextVocab
     public static final Property pMaxBasicQueries   = Vocab.property(NS, "maxBasicQueries") ;
     public static final Property pStoreValues       = Vocab.property(NS, "storeValues") ;
     public static final Property pIgnoreIndexErrors       = Vocab.property(NS, "ignoreIndexErrors") ;
+    public static final Property pFacetFields      = Vocab.property(NS, "facetFields") ;
     public static final Property pQueryAnalyzer     = Vocab.property(NS, "queryAnalyzer") ;
     public static final Property pQueryParser       = Vocab.property(NS, "queryParser") ;
     public static final Property pEntityMap         = Vocab.property(NS, "entityMap") ;

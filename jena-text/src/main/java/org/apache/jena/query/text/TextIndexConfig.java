@@ -21,6 +21,10 @@
 
 package org.apache.jena.query.text;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 import org.apache.lucene.analysis.Analyzer;
 
 public class TextIndexConfig {
@@ -33,6 +37,7 @@ public class TextIndexConfig {
     int maxBasicQueries = 1024;
     boolean valueStored;
     boolean ignoreIndexErrors;
+    List<String> facetFields = new ArrayList<>();
 
     public TextIndexConfig(EntityDefinition entDef) {
         this.entDef = entDef;
@@ -96,5 +101,38 @@ public class TextIndexConfig {
 
     public void setIgnoreIndexErrors(boolean ignore) {
         this.ignoreIndexErrors = ignore;
+    }
+
+    /**
+     * Get the list of fields to enable native Lucene faceting on.
+     * These fields will have SortedSetDocValues added during indexing.
+     */
+    public List<String> getFacetFields() {
+        return Collections.unmodifiableList(facetFields);
+    }
+
+    /**
+     * Set the list of fields to enable native Lucene faceting on.
+     * @param facetFields list of field names that should support faceting
+     */
+    public void setFacetFields(List<String> facetFields) {
+        this.facetFields = new ArrayList<>(facetFields);
+    }
+
+    /**
+     * Add a field to the list of facetable fields.
+     * @param fieldName the field name to enable faceting on
+     */
+    public void addFacetField(String fieldName) {
+        this.facetFields.add(fieldName);
+    }
+
+    /**
+     * Check if a field is configured for faceting.
+     * @param fieldName the field name to check
+     * @return true if the field is configured for faceting
+     */
+    public boolean isFacetField(String fieldName) {
+        return facetFields.contains(fieldName);
     }
 }

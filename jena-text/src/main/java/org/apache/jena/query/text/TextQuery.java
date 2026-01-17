@@ -70,6 +70,14 @@ public class TextQuery
                 }
             });
 
+            // Register native facet counts property function (no document iteration)
+            PropertyFunctionRegistry.get().put("http://jena.apache.org/text#facetCounts", new PropertyFunctionFactory() {
+                @Override
+                public PropertyFunction create(String uri) {
+                    return new TextFacetCountsPF() ;
+                }
+            });
+
             JenaSystem.logLifecycle("TextQuery.init - finish") ;
             // Register indirections.
             InitTextCmds.cmds();
