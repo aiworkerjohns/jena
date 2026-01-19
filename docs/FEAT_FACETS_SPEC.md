@@ -9,6 +9,7 @@ This document specifies the native Lucene faceting functionality in Apache Jena'
 The jena-text module supports native Lucene faceting using `SortedSetDocValuesFacetCounts`, which provides:
 
 - **Open Facets**: Get facet counts for all indexed documents (no search query required)
+- **Filtered Facets**: Get facet counts constrained by a text search query
 - **Efficient Counting**: O(1) facet counting using pre-built DocValues (no document iteration)
 - **SPARQL Integration**: Two property functions for facet access
 - **Java API**: Direct access to faceting via `TextIndexLucene` methods
@@ -17,8 +18,8 @@ The jena-text module supports native Lucene faceting using `SortedSetDocValuesFa
 
 | Function | Purpose |
 |----------|---------|
-| `text:facetCounts` | Get facet counts only (open facets, no document results) |
-| `text:queryWithFacets` | Text search that returns documents with scores |
+| `text:facetCounts` | Get facet counts (open or filtered by search query) |
+| `text:queryWithFacets` | Text search that returns documents with scores and facets |
 
 ### Java API Methods
 
@@ -91,25 +92,30 @@ PREFIX text:    <http://jena.apache.org/text#>
 
 ## SPARQL Usage
 
-### text:facetCounts - Get Facet Counts Only
+### text:facetCounts - Get Facet Counts
 
-Use this when you want facet counts without document results (like an "open facet" view for browsing a catalog).
+Use this when you want facet counts without document results. Supports both open facets (browse all documents) and filtered facets (counts for search results).
 
 **Syntax:**
 ```sparql
+# Open facets (all documents)
 (?field ?value ?count) text:facetCounts (field1 field2 ... maxValues)
+
+# Filtered facets (matching search query)
+(?field ?value ?count) text:facetCounts ("search query" field1 field2 ... maxValues)
 ```
 
 **Parameters:**
-- `field1, field2, ...` - Field names to get facet counts for (strings)
-- `maxValues` - Maximum values per field (integer, required)
+- `"search query"` - Optional Lucene query string to filter documents. If the first argument is NOT a configured facet field name and NOT a number, it is treated as a search query.
+- `field1, field2, ...` - Field names to get facet counts for (strings, must be configured in `text:facetFields`)
+- `maxValues` - Maximum values per field (integer, optional, default 10)
 
 **Returns:** Bindings for each facet value:
 - `?field` - The facet field name (literal)
 - `?value` - The facet value (literal)
 - `?count` - Number of documents with this value (xsd:long)
 
-**Example: Get category facet counts**
+**Example: Open facets - Get category counts for all documents**
 ```sparql
 PREFIX text: <http://jena.apache.org/text#>
 
@@ -120,7 +126,7 @@ WHERE {
 ORDER BY DESC(?count)
 ```
 
-**Example: Get counts for multiple fields**
+**Example: Open facets - Multiple fields**
 ```sparql
 PREFIX text: <http://jena.apache.org/text#>
 
@@ -131,7 +137,34 @@ WHERE {
 ORDER BY ?field DESC(?count)
 ```
 
-**Note:** For filtered facets (counts constrained by a search query), use the Java API `getFacetCounts(queryString, fields, maxValues)` method, or combine `text:queryWithFacets` with SPARQL aggregation.
+**Example: Filtered facets - Counts for search results**
+```sparql
+PREFIX text: <http://jena.apache.org/text#>
+
+# Get category counts for documents matching "machine AND learning"
+SELECT ?field ?value ?count
+WHERE {
+    (?field ?value ?count) text:facetCounts ("machine AND learning" "category" 10)
+}
+ORDER BY DESC(?count)
+```
+
+**Example: Filtered facets - Single word query**
+```sparql
+PREFIX text: <http://jena.apache.org/text#>
+
+# Get category and author counts for documents containing "technology"
+SELECT ?field ?value ?count
+WHERE {
+    (?field ?value ?count) text:facetCounts ("technology" "category" "author" 10)
+}
+ORDER BY ?field DESC(?count)
+```
+
+**Query Syntax Notes:**
+- The default query parser uses OR for multiple words. Use explicit `AND` for conjunction: `"machine AND learning"`
+- Use quotes for phrase matching: `"\"machine learning\""`
+- Standard Lucene query syntax is supported: wildcards, fuzzy, etc.
 
 ### text:queryWithFacets - Text Search with Scores
 
@@ -353,21 +386,21 @@ The implementation uses Lucene's `SortedSetDocValuesFacetCounts` which:
 | Feature | text:queryWithFacets | text:facetCounts |
 |---------|---------------------|------------------|
 | Returns documents | Yes (with scores) | No |
-| Returns facet counts | Via SPARQL GROUP BY | Yes (directly) |
+| Returns facet counts | Yes (via subject list) | Yes (directly) |
 | Open facets (no query) | No | Yes |
-| Requires search query | Yes | No |
-| Implementation | Lucene search | Native Lucene SortedSetDocValues |
-| Best for | Search results | Faceted navigation UI |
+| Filtered facets (with query) | Yes | Yes |
+| Implementation | Lucene search + facets | Native Lucene SortedSetDocValues |
+| Best for | Search results + facets | Faceted navigation UI |
 
 **Use `text:facetCounts` when:**
 - You only need facet counts (no documents)
 - Building faceted navigation UI ("Browse by category")
-- Showing available filter options before search
+- Showing available filter options before or during search
+- Getting facet counts constrained by a search query
 
 **Use `text:queryWithFacets` when:**
-- You need search results with scores
-- Combining text search with SPARQL patterns
-- Computing facet counts for search results via GROUP BY
+- You need both search results with scores AND facet counts in one query
+- Combining text search with SPARQL patterns for additional filtering
 
 ---
 
@@ -418,4 +451,4 @@ The old iteration-based approach still works but native faceting is recommended 
 
 ---
 
-**Last Updated:** 2026-01-17
+**Last Updated:** 2026-01-19

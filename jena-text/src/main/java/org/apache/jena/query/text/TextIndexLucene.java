@@ -1015,10 +1015,39 @@ public class TextIndexLucene implements TextIndex {
                     // This is equivalent to MatchAllDocsQuery but faster
                     facets = new SortedSetDocValuesFacetCounts(state);
                 } else {
-                    // When filtering by query, use FacetsCollector
+                    // When filtering by query, we need to handle the triples-based indexing model
+                    // where each triple creates a separate document. The search may match documents
+                    // that don't have facet DocValues (e.g., label documents vs category documents).
+                    // To fix this, we:
+                    // 1. Execute search to find matching entity URIs
+                    // 2. Build a query that matches those URIs
+                    // 3. Collect facets from documents with those URIs (which includes facet docs)
                     Query query = parseQuery(queryString, queryAnalyzer);
+                    TopDocs topDocs = searcher.search(query, 10000);
+
+                    // Extract unique entity URIs from search results
+                    String entityField = docDef.getEntityField();
+                    Set<String> matchedUris = new HashSet<>();
+                    StoredFields storedFields = searcher.storedFields();
+                    for (ScoreDoc sd : topDocs.scoreDocs) {
+                        Document doc = storedFields.document(sd.doc);
+                        String uri = doc.get(entityField);
+                        if (uri != null) {
+                            matchedUris.add(uri);
+                        }
+                    }
+
+                    // Build a query that matches all documents for the matched entities
+                    // This will include documents with facet fields for those entities
+                    BooleanQuery.Builder uriQueryBuilder = new BooleanQuery.Builder();
+                    for (String uri : matchedUris) {
+                        uriQueryBuilder.add(new TermQuery(new Term(entityField, uri)), BooleanClause.Occur.SHOULD);
+                    }
+                    Query uriQuery = uriQueryBuilder.build();
+
+                    // Now collect facets from all documents for matched entities
                     FacetsCollector fc = new FacetsCollector();
-                    searcher.search(query, fc);
+                    searcher.search(uriQuery, fc);
                     facets = new SortedSetDocValuesFacetCounts(state, fc);
                 }
 

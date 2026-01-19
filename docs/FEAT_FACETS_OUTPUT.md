@@ -2,7 +2,7 @@
 
 This document shows the actual output from running the tests in FEAT_FACETS_TESTING.md.
 
-**Date:** 2026-01-17
+**Date:** 2026-01-19
 
 ---
 
@@ -17,7 +17,7 @@ mvn test -pl jena-text -Dtest="*Facet*"
 
 **Result:** ✅ SUCCESS
 ```
-Tests run: 34, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 36, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
@@ -141,6 +141,43 @@ ORDER BY DESC(?count)
 | year | 2024 | 3 |
 | year | 2022 | 1 |
 
+### Test 5: Filtered Facets - Category Counts for Search Results
+
+```sparql
+SELECT ?field ?value ?count
+WHERE {
+  (?field ?value ?count) text:facetCounts ("machine AND learning" "category" 10)
+}
+ORDER BY DESC(?count)
+```
+
+**Result:** ✅ PASS
+| field | value | count |
+|-------|-------|-------|
+| category | technology | 4 |
+| category | science | 1 |
+
+Note: Only shows categories for documents containing "machine AND learning". Cooking category does not appear.
+
+### Test 6: Filtered Facets - Single Word Query
+
+```sparql
+SELECT ?field ?value ?count
+WHERE {
+  (?field ?value ?count) text:facetCounts ("learning" "category" 10)
+}
+ORDER BY DESC(?count)
+```
+
+**Result:** ✅ PASS
+| field | value | count |
+|-------|-------|-------|
+| category | technology | 4 |
+| category | cooking | 2 |
+| category | science | 2 |
+
+Note: All documents contain "learning" so all categories appear.
+
 ---
 
 ## Step 5: Test Faceted Search (text:queryWithFacets)
@@ -248,8 +285,8 @@ mvn test -pl jena-text -Dtest="*Facet*"
 | TestFacetedSearchPerformance | 5 | ✅ PASS |
 | TestTextQueryFacetsPF | 4 | ✅ PASS |
 | TestNativeFacetCounts | 8 | ✅ PASS |
-| TestTextFacetCountsPF | 4 | ✅ PASS |
-| **Total** | **34** | ✅ **PASS** |
+| TestTextFacetCountsPF | 6 | ✅ PASS |
+| **Total** | **36** | ✅ **PASS** |
 
 ---
 
@@ -261,10 +298,9 @@ All tests passed successfully:
 |-----------|--------|
 | Build (jena-text) | ✅ SUCCESS |
 | Build (Fuseki) | ✅ SUCCESS |
-| Unit Tests (34) | ✅ ALL PASS |
-| text:facetCounts (category) | ✅ WORKING |
-| text:facetCounts (author) | ✅ WORKING |
-| text:facetCounts (year) | ✅ WORKING |
+| Unit Tests (36) | ✅ ALL PASS |
+| text:facetCounts (open facets) | ✅ WORKING |
+| text:facetCounts (filtered facets) | ✅ WORKING |
 | text:facetCounts (multiple fields) | ✅ WORKING |
 | text:queryWithFacets (basic) | ✅ WORKING |
 | text:queryWithFacets (with filter) | ✅ WORKING |
@@ -272,6 +308,8 @@ All tests passed successfully:
 
 **Native Lucene faceting is fully operational with O(1) counting performance.**
 
+**New in this version:** Filtered facets support - `text:facetCounts` now accepts an optional search query to get facet counts only for matching documents.
+
 ---
 
-**Generated:** 2026-01-17
+**Generated:** 2026-01-19

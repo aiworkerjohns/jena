@@ -23,8 +23,12 @@ package org.apache.jena.query.text;
 
 import static org.junit.Assert.*;
 
+import java.io.File;
 import java.io.Reader;
 import java.io.StringReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -45,12 +49,14 @@ import org.junit.Test;
 public class TestTextFacetCountsPF {
 
     private static final String SPEC_BASE = "http://example.org/spec#";
-    private static final String SPEC_ROOT_LOCAL = "facet_text_dataset";
-    private static final String SPEC_ROOT_URI = SPEC_BASE + SPEC_ROOT_LOCAL;
 
-    private static final String SPEC;
-    static {
-        SPEC = StrUtils.strjoinNL(
+    // Use unique temp directory per test for complete isolation
+    private Path tempDir;
+    private String specRootLocal;
+    private String specRootUri;
+
+    private String createSpec() {
+        return StrUtils.strjoinNL(
             "prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> ",
             "prefix ja:   <http://jena.hpl.hp.com/2005/11/Assembler#> ",
             "prefix text: <http://jena.apache.org/text#>",
@@ -60,29 +66,29 @@ public class TestTextFacetCountsPF {
             "text:TextDataset      rdfs:subClassOf ja:RDFDataset .",
             "text:TextIndexLucene  rdfs:subClassOf text:TextIndex .",
             "",
-            ":" + SPEC_ROOT_LOCAL,
+            ":" + specRootLocal,
             "    a              text:TextDataset ;",
-            "    text:dataset   :dataset ;",
-            "    text:index     :indexLucene ;",
+            "    text:dataset   :dataset_" + specRootLocal + " ;",
+            "    text:index     :indexLucene_" + specRootLocal + " ;",
             "    .",
             "",
-            ":dataset",
+            ":dataset_" + specRootLocal,
             "    a               ja:RDFDataset ;",
-            "    ja:defaultGraph :graph ;",
+            "    ja:defaultGraph :graph_" + specRootLocal + " ;",
             ".",
-            ":graph",
+            ":graph_" + specRootLocal,
             "    a               ja:MemoryModel ;",
             ".",
             "",
-            ":indexLucene",
+            ":indexLucene_" + specRootLocal,
             "    a text:TextIndexLucene ;",
-            "    text:directory \"mem\" ;",
+            "    text:directory \"" + tempDir.toAbsolutePath().toString().replace("\\", "/") + "\" ;",
             "    text:storeValues true ;",
             "    text:facetFields (\"category\" \"author\") ;",
-            "    text:entityMap :entMap ;",
+            "    text:entityMap :entMap_" + specRootLocal + " ;",
             "    .",
             "",
-            ":entMap",
+            ":entMap_" + specRootLocal,
             "    a text:EntityMap ;",
             "    text:entityField      \"uri\" ;",
             "    text:defaultField     \"label\" ;",
@@ -108,19 +114,32 @@ public class TestTextFacetCountsPF {
     private Dataset dataset;
 
     @Before
-    public void before() {
-        Reader reader = new StringReader(SPEC);
+    public void before() throws Exception {
+        // Create unique temp directory for complete test isolation
+        tempDir = Files.createTempDirectory("jena-text-facet-test-");
+        specRootLocal = "facet_text_dataset_" + System.nanoTime();
+        specRootUri = SPEC_BASE + specRootLocal;
+
+        String spec = createSpec();
+        Reader reader = new StringReader(spec);
         Model specModel = ModelFactory.createDefaultModel();
         specModel.read(reader, "", "TURTLE");
         TextAssembler.init();
-        Resource root = specModel.getResource(SPEC_ROOT_URI);
+        Resource root = specModel.getResource(specRootUri);
         dataset = (Dataset) Assembler.general().open(root);
     }
 
     @After
-    public void after() {
+    public void after() throws Exception {
         if (dataset != null) {
             dataset.close();
+        }
+        // Clean up temp directory
+        if (tempDir != null && Files.exists(tempDir)) {
+            Files.walk(tempDir)
+                .sorted(Comparator.reverseOrder())
+                .map(Path::toFile)
+                .forEach(File::delete);
         }
     }
 
@@ -278,6 +297,120 @@ public class TestTextFacetCountsPF {
                 // First result should be beta with count 3
                 assertEquals("beta", first.getLiteral("value").getString());
                 assertEquals(3, first.getLiteral("count").getLong());
+            }
+        } finally {
+            dataset.end();
+        }
+    }
+
+    @Test
+    public void testFilteredFacetCountsMultiWord() {
+        // Test filtered facets with a multi-word query
+        String turtle = StrUtils.strjoinNL(
+            "ex:doc1 rdfs:label \"Machine Learning Intro\" ; ex:category \"technology\" ; ex:author \"Smith\" .",
+            "ex:doc2 rdfs:label \"Deep Learning Networks\" ; ex:category \"technology\" ; ex:author \"Jones\" .",
+            "ex:doc3 rdfs:label \"Learning to Cook\" ; ex:category \"cooking\" ; ex:author \"Smith\" .",
+            "ex:doc4 rdfs:label \"Machine Learning Advanced\" ; ex:category \"technology\" ; ex:author \"Brown\" ."
+        );
+        loadData(turtle);
+
+        // Query for "machine AND learning" - should only count technology docs with both words
+        // Note: default QueryParser uses OR, so we use explicit AND
+        String queryString = StrUtils.strjoinNL(
+            QUERY_PROLOG,
+            "SELECT ?field ?value ?count",
+            "WHERE {",
+            "    (?field ?value ?count) text:facetCounts (\"machine AND learning\" \"category\" 10) .",
+            "}"
+        );
+
+        dataset.begin(ReadWrite.READ);
+        try {
+            Query query = QueryFactory.create(queryString);
+            try (QueryExecution qexec = QueryExecutionFactory.create(query, dataset)) {
+                ResultSet rs = qexec.execSelect();
+                Map<String, Long> counts = new HashMap<>();
+                while (rs.hasNext()) {
+                    QuerySolution sol = rs.next();
+                    String value = sol.getLiteral("value").getString();
+                    long count = sol.getLiteral("count").getLong();
+                    counts.put(value, count);
+                }
+                // Only docs 1 and 4 contain "machine learning"
+                assertEquals(Long.valueOf(2), counts.get("technology"));
+                assertNull("cooking should not appear", counts.get("cooking"));
+            }
+        } finally {
+            dataset.end();
+        }
+    }
+
+    @Test
+    public void testFilteredFacetCountsSingleWord() {
+        // Test filtered facets with a single-word query (non-facet-field word)
+        String turtle = StrUtils.strjoinNL(
+            "ex:doc1 rdfs:label \"Machine Learning Intro\" ; ex:category \"technology\" ; ex:author \"Smith\" .",
+            "ex:doc2 rdfs:label \"Deep Networks\" ; ex:category \"technology\" ; ex:author \"Jones\" .",
+            "ex:doc3 rdfs:label \"Learning to Cook\" ; ex:category \"cooking\" ; ex:author \"Smith\" .",
+            "ex:doc4 rdfs:label \"Quantum Physics\" ; ex:category \"science\" ; ex:author \"Wilson\" ."
+        );
+        loadData(turtle);
+
+        // First verify open facets work
+        String openQueryString = StrUtils.strjoinNL(
+            QUERY_PROLOG,
+            "SELECT ?field ?value ?count",
+            "WHERE {",
+            "    (?field ?value ?count) text:facetCounts (\"category\" 10) .",
+            "}"
+        );
+
+        dataset.begin(ReadWrite.READ);
+        try {
+            Query openQuery = QueryFactory.create(openQueryString);
+            try (QueryExecution qexec = QueryExecutionFactory.create(openQuery, dataset)) {
+                ResultSet rs = qexec.execSelect();
+                Map<String, Long> openCounts = new HashMap<>();
+                while (rs.hasNext()) {
+                    QuerySolution sol = rs.next();
+                    String value = sol.getLiteral("value").getString();
+                    long count = sol.getLiteral("count").getLong();
+                    openCounts.put(value, count);
+                }
+                System.err.println("Open facet counts: " + openCounts);
+                // Should have 2 technology, 1 cooking, 1 science
+                assertEquals("Open facets: technology", Long.valueOf(2), openCounts.get("technology"));
+            }
+        } finally {
+            dataset.end();
+        }
+
+        // Now test filtered facets
+        String queryString = StrUtils.strjoinNL(
+            QUERY_PROLOG,
+            "SELECT ?field ?value ?count",
+            "WHERE {",
+            "    (?field ?value ?count) text:facetCounts (\"learning\" \"category\" 10) .",
+            "}"
+        );
+
+        dataset.begin(ReadWrite.READ);
+        try {
+            Query query = QueryFactory.create(queryString);
+            try (QueryExecution qexec = QueryExecutionFactory.create(query, dataset)) {
+                ResultSet rs = qexec.execSelect();
+                Map<String, Long> counts = new HashMap<>();
+                while (rs.hasNext()) {
+                    QuerySolution sol = rs.next();
+                    String value = sol.getLiteral("value").getString();
+                    long count = sol.getLiteral("count").getLong();
+                    counts.put(value, count);
+                }
+                System.err.println("Filtered facet counts for 'learning': " + counts);
+                // Docs with "learning": doc1 (technology), doc3 (cooking)
+                assertEquals(Long.valueOf(1), counts.get("technology"));
+                assertEquals(Long.valueOf(1), counts.get("cooking"));
+                assertNull("science should not appear", counts.get("science"));
             }
         } finally {
             dataset.end();

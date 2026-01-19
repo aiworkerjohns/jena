@@ -52,35 +52,46 @@ import org.slf4j.LoggerFactory;
  * SortedSetDocValues faceting. It does NOT iterate through documents - counts are
  * computed directly from the index structure.
  * <p>
- * Usage:
+ * <b>Syntax:</b>
+ * <pre>
+ * (?field ?value ?count) text:facetCounts (query? field1 field2 ... maxValues?)
+ * </pre>
+ * <p>
+ * <b>Usage Examples:</b>
  * <pre>
  * PREFIX text: &lt;http://jena.apache.org/text#&gt;
  *
- * # Get all facet counts for configured fields (open facets)
- * SELECT ?field ?value ?count
- * WHERE {
+ * # Open facets - counts for all indexed documents
+ * SELECT ?field ?value ?count WHERE {
  *   (?field ?value ?count) text:facetCounts ("category" "author" 10)
  * }
  *
- * # Get facet counts filtered by a search query
- * SELECT ?field ?value ?count
- * WHERE {
- *   (?field ?value ?count) text:facetCounts ("learning" "category" "author" 10)
+ * # Filtered facets - counts only for documents matching "machine learning"
+ * SELECT ?field ?value ?count WHERE {
+ *   (?field ?value ?count) text:facetCounts ("machine learning" "category" "author" 10)
+ * }
+ *
+ * # Single-word query filter (detected as query if not a configured facet field)
+ * SELECT ?field ?value ?count WHERE {
+ *   (?field ?value ?count) text:facetCounts ("learning" "category" 10)
  * }
  * </pre>
  * <p>
- * The object list contains:
+ * <b>Arguments:</b>
  * <ol>
- *   <li>Optional: A search query string to filter documents (literal)</li>
- *   <li>Required: One or more facet field names (strings)</li>
- *   <li>Optional: Maximum facet values per field (integer, default 10)</li>
+ *   <li><b>query</b> (optional): A Lucene query string to filter documents.
+ *       Detected automatically: if the first argument is not a configured facet field name
+ *       and not a number, it is treated as a query.</li>
+ *   <li><b>field1, field2, ...</b> (required): One or more facet field names (must be
+ *       configured in text:facetFields)</li>
+ *   <li><b>maxValues</b> (optional): Maximum facet values per field (integer, default 10)</li>
  * </ol>
  * <p>
- * Returns bindings for each facet value:
+ * <b>Returns:</b> Bindings for each facet value with:
  * <ul>
- *   <li>?field - The facet field name</li>
- *   <li>?value - A facet value</li>
- *   <li>?count - The count for this facet value</li>
+ *   <li>?field - The facet field name (xsd:string)</li>
+ *   <li>?value - A facet value (xsd:string)</li>
+ *   <li>?count - Number of documents with this value (xsd:long)</li>
  * </ul>
  */
 public class TextFacetCountsPF extends PropertyFunctionBase {
@@ -237,6 +248,10 @@ public class TextFacetCountsPF extends PropertyFunctionBase {
         String queryString = null;
         int maxValues = 10;
 
+        // Get configured facet fields for detection
+        List<String> configuredFacetFields = textIndex != null ?
+            textIndex.getFacetFields() : new ArrayList<>();
+
         if (argObject.isNode()) {
             Node o = argObject.getArg();
             if (!o.isLiteral()) {
@@ -250,13 +265,22 @@ public class TextFacetCountsPF extends PropertyFunctionBase {
         List<Node> list = argObject.getArgList();
         int idx = 0;
 
-        // First check if the first argument looks like a search query
-        // (contains spaces or special query characters)
+        // First argument detection: if it's a literal that is NOT a configured facet field
+        // and NOT a number, treat it as a search query
         if (!list.isEmpty() && list.get(0).isLiteral()) {
             String firstArg = list.get(0).getLiteralLexicalForm();
-            // If it contains typical query characters, treat it as a query
-            if (firstArg.contains(" ") || firstArg.contains("*") || firstArg.contains("?") ||
-                firstArg.contains("+") || firstArg.contains("-") || firstArg.contains("\"")) {
+
+            // Check if it's a number (would be maxValues at wrong position - unlikely)
+            boolean isNumber = false;
+            try {
+                Integer.parseInt(firstArg);
+                isNumber = true;
+            } catch (NumberFormatException e) {
+                // Not a number
+            }
+
+            // If not a number and not a configured facet field, it's a query
+            if (!isNumber && !configuredFacetFields.contains(firstArg)) {
                 queryString = firstArg;
                 idx++;
             }

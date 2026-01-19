@@ -34,7 +34,7 @@ mvn test -pl jena-text -Dtest="*Facet*"
 
 Expected output:
 ```
-Tests run: 34, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 36, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
@@ -290,6 +290,65 @@ ORDER BY DESC(?count)
 
 Expected: Smith should have count 3 (appears in doc1, doc3, doc6).
 
+### Test 4: Filtered Facets - Counts for Search Results
+
+Get facet counts only for documents matching a search query:
+
+```bash
+curl -X POST "http://localhost:3030/ds" \
+    -H "Content-Type: application/sparql-query" \
+    -H "Accept: application/json" \
+    -d '
+PREFIX text: <http://jena.apache.org/text#>
+
+# Get category counts only for documents containing "machine AND learning"
+SELECT ?field ?value ?count
+WHERE {
+  (?field ?value ?count) text:facetCounts ("machine AND learning" "category" 10)
+}
+ORDER BY DESC(?count)
+'
+```
+
+Expected output:
+```json
+{
+  "results": {
+    "bindings": [
+      { "field": {"value": "category"}, "value": {"value": "technology"}, "count": {"value": "4"} },
+      { "field": {"value": "category"}, "value": {"value": "science"}, "count": {"value": "1"} }
+    ]
+  }
+}
+```
+
+Note: Only technology and science categories appear because only documents with "machine learning" are counted.
+
+### Test 5: Filtered Facets with Single Word Query
+
+```bash
+curl -X POST "http://localhost:3030/ds" \
+    -H "Content-Type: application/sparql-query" \
+    -H "Accept: application/json" \
+    -d '
+PREFIX text: <http://jena.apache.org/text#>
+
+# Get author counts for documents containing "learning"
+SELECT ?field ?value ?count
+WHERE {
+  (?field ?value ?count) text:facetCounts ("learning" "author" 10)
+}
+ORDER BY DESC(?count)
+'
+```
+
+Expected: All authors should appear since all documents contain "learning".
+
+**Query Detection Notes:**
+- The first argument is treated as a search query if it is NOT a configured facet field name AND NOT a number
+- Use `AND` for conjunction: `"machine AND learning"`
+- Use quotes for phrase: `"\"machine learning\""`
+
 ---
 
 ## Step 6: Test Faceted Search (text:queryWithFacets)
@@ -518,7 +577,7 @@ mvn test -Dtest="*Facet*"
 
 Expected output:
 ```
-Tests run: 34, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 36, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
@@ -678,6 +737,7 @@ time curl -s -X POST "http://localhost:3030/ds" \
 | Test | Expected Result |
 |------|-----------------|
 | text:facetCounts (open) | All facet counts returned without search |
+| text:facetCounts (filtered) | Facet counts only for matching documents |
 | text:facetCounts (multiple fields) | Counts for all specified fields |
 | text:queryWithFacets (basic) | Documents + scores returned |
 | text:queryWithFacets (filtered) | Only matching documents |
@@ -694,21 +754,35 @@ time curl -s -X POST "http://localhost:3030/ds" \
 
 ### text:facetCounts
 
-Native Lucene faceting - O(1) counting, no document iteration.
+Native Lucene faceting - O(1) counting, no document iteration. Supports both open and filtered facets.
 
 **Syntax:**
 ```sparql
+# Open facets (all documents)
 (?field ?value ?count) text:facetCounts (field1 field2 ... maxValues)
+
+# Filtered facets (documents matching search query)
+(?field ?value ?count) text:facetCounts ("search query" field1 field2 ... maxValues)
 ```
 
 **Examples:**
 ```sparql
-# Single field
+# Single field - open facets
 (?f ?v ?c) text:facetCounts ("category" 10)
 
-# Multiple fields
+# Multiple fields - open facets
 (?f ?v ?c) text:facetCounts ("category" "author" "year" 20)
+
+# Filtered facets - counts only for matching documents
+(?f ?v ?c) text:facetCounts ("machine AND learning" "category" 10)
+
+# Filtered facets - single word query
+(?f ?v ?c) text:facetCounts ("technology" "author" "year" 10)
 ```
+
+**Query Detection:**
+- First argument is treated as search query if NOT a configured facet field name AND NOT a number
+- Use `AND` for conjunction, standard Lucene query syntax supported
 
 ### text:queryWithFacets
 
@@ -742,4 +816,4 @@ rm -rf ~/fuseki-facet-test
 
 ---
 
-**Last Updated:** 2026-01-17
+**Last Updated:** 2026-01-19
