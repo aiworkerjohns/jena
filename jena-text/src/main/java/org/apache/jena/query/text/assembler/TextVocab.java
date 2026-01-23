@@ -45,6 +45,11 @@ public class TextVocab
     public static final Property pStoreValues       = Vocab.property(NS, "storeValues") ;
     public static final Property pIgnoreIndexErrors       = Vocab.property(NS, "ignoreIndexErrors") ;
     public static final Property pFacetFields      = Vocab.property(NS, "facetFields") ;
+    // Geo/spatial properties
+    public static final Property pGeoFields        = Vocab.property(NS, "geoFields") ;
+    public static final Property pGeoFormat        = Vocab.property(NS, "geoFormat") ;
+    public static final Property pStoreCoordinates = Vocab.property(NS, "storeCoordinates") ;
+    public static final Property pDocProducerMode  = Vocab.property(NS, "docProducerMode") ;
     public static final Property pQueryAnalyzer     = Vocab.property(NS, "queryAnalyzer") ;
     public static final Property pQueryParser       = Vocab.property(NS, "queryParser") ;
     public static final Property pEntityMap         = Vocab.property(NS, "entityMap") ;

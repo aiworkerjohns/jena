@@ -39,6 +39,14 @@ public class TextIndexConfig {
     boolean ignoreIndexErrors;
     List<String> facetFields = new ArrayList<>();
 
+    // Geo/spatial configuration
+    List<String> geoFields = new ArrayList<>();
+    String geoFormat = "WKT";  // Default: WKT POINT (lon lat) format
+    boolean storeCoordinates = true;  // Store lat/lon for retrieval
+
+    // Document producer mode: "triple" (default) or "entity"
+    String docProducerMode = "triple";
+
     public TextIndexConfig(EntityDefinition entDef) {
         this.entDef = entDef;
     }
@@ -134,5 +142,101 @@ public class TextIndexConfig {
      */
     public boolean isFacetField(String fieldName) {
         return facetFields.contains(fieldName);
+    }
+
+    // ========== Geo/Spatial Configuration ==========
+
+    /**
+     * Get the list of fields configured for geo/spatial indexing.
+     * @return unmodifiable list of geo field names
+     */
+    public List<String> getGeoFields() {
+        return Collections.unmodifiableList(geoFields);
+    }
+
+    /**
+     * Set the list of fields for geo/spatial indexing.
+     * @param geoFields list of field names that should support spatial queries
+     */
+    public void setGeoFields(List<String> geoFields) {
+        this.geoFields = new ArrayList<>(geoFields);
+    }
+
+    /**
+     * Add a field to the list of geo-indexed fields.
+     * @param fieldName the field name to enable geo indexing on
+     */
+    public void addGeoField(String fieldName) {
+        this.geoFields.add(fieldName);
+    }
+
+    /**
+     * Check if a field is configured for geo indexing.
+     * @param fieldName the field name to check
+     * @return true if the field is configured for geo indexing
+     */
+    public boolean isGeoField(String fieldName) {
+        return geoFields.contains(fieldName);
+    }
+
+    /**
+     * Get the geo input format.
+     * @return the geo format (e.g., "WKT")
+     */
+    public String getGeoFormat() {
+        return geoFormat;
+    }
+
+    /**
+     * Set the geo input format.
+     * @param geoFormat the format (e.g., "WKT" for WKT POINT/POLYGON)
+     */
+    public void setGeoFormat(String geoFormat) {
+        this.geoFormat = geoFormat;
+    }
+
+    /**
+     * Check if coordinates should be stored for retrieval.
+     * @return true if lat/lon should be stored
+     */
+    public boolean isStoreCoordinates() {
+        return storeCoordinates;
+    }
+
+    /**
+     * Set whether to store coordinates for retrieval.
+     * @param storeCoordinates true to store lat/lon values
+     */
+    public void setStoreCoordinates(boolean storeCoordinates) {
+        this.storeCoordinates = storeCoordinates;
+    }
+
+    // ========== Document Producer Mode ==========
+
+    /**
+     * Get the document producer mode.
+     * @return "triple" for one-doc-per-triple, "entity" for one-doc-per-entity
+     */
+    public String getDocProducerMode() {
+        return docProducerMode;
+    }
+
+    /**
+     * Set the document producer mode.
+     * @param mode "triple" or "entity"
+     */
+    public void setDocProducerMode(String mode) {
+        if (!"triple".equals(mode) && !"entity".equals(mode)) {
+            throw new IllegalArgumentException("docProducerMode must be 'triple' or 'entity', got: " + mode);
+        }
+        this.docProducerMode = mode;
+    }
+
+    /**
+     * Check if entity mode is enabled.
+     * @return true if using entity-based document production
+     */
+    public boolean isEntityMode() {
+        return "entity".equals(docProducerMode);
     }
 }

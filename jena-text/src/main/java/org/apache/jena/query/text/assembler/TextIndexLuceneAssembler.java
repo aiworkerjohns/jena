@@ -236,6 +236,65 @@ public class TextIndexLuceneAssembler extends AssemblerBase {
                 cacheQueries = cqNode.asLiteral().getBoolean();
             }
 
+            // Parse geo fields (list of field names for spatial indexing)
+            java.util.List<String> geoFields = new java.util.ArrayList<>();
+            Statement geoFieldsStatement = root.getProperty(pGeoFields);
+            if (null != geoFieldsStatement) {
+                RDFNode gfNode = geoFieldsStatement.getObject();
+                if (gfNode.isLiteral()) {
+                    // Single field name
+                    geoFields.add(gfNode.asLiteral().getString());
+                } else if (gfNode.isResource()) {
+                    // List of field names
+                    try {
+                        org.apache.jena.rdf.model.RDFList rdfList = gfNode.asResource().as(org.apache.jena.rdf.model.RDFList.class);
+                        for (RDFNode item : rdfList.asJavaList()) {
+                            if (item.isLiteral()) {
+                                geoFields.add(item.asLiteral().getString());
+                            }
+                        }
+                    } catch (Exception e) {
+                        throw new TextIndexException("text:geoFields must be a literal or RDF list: " + gfNode);
+                    }
+                }
+            }
+
+            // Parse geo format (default: WKT)
+            String geoFormat = "WKT";
+            Statement geoFormatStatement = root.getProperty(pGeoFormat);
+            if (null != geoFormatStatement) {
+                RDFNode gfNode = geoFormatStatement.getObject();
+                if (!gfNode.isLiteral()) {
+                    throw new TextIndexException("text:geoFormat property must be a string: " + gfNode);
+                }
+                geoFormat = gfNode.asLiteral().getString();
+            }
+
+            // Parse storeCoordinates (default: true)
+            boolean storeCoordinates = true;
+            Statement storeCoordinatesStatement = root.getProperty(pStoreCoordinates);
+            if (null != storeCoordinatesStatement) {
+                RDFNode scNode = storeCoordinatesStatement.getObject();
+                if (!scNode.isLiteral()) {
+                    throw new TextIndexException("text:storeCoordinates property must be a boolean: " + scNode);
+                }
+                storeCoordinates = scNode.asLiteral().getBoolean();
+            }
+
+            // Parse docProducerMode (default: "triple")
+            String docProducerMode = "triple";
+            Statement docProducerModeStatement = root.getProperty(pDocProducerMode);
+            if (null != docProducerModeStatement) {
+                RDFNode dpmNode = docProducerModeStatement.getObject();
+                if (!dpmNode.isLiteral()) {
+                    throw new TextIndexException("text:docProducerMode property must be 'triple' or 'entity': " + dpmNode);
+                }
+                docProducerMode = dpmNode.asLiteral().getString();
+                if (!"triple".equals(docProducerMode) && !"entity".equals(docProducerMode)) {
+                    throw new TextIndexException("text:docProducerMode must be 'triple' or 'entity', got: " + docProducerMode);
+                }
+            }
+
             Resource r = GraphUtils.getResourceValue(root, pEntityMap) ;
             EntityDefinition docDef = (EntityDefinition)a.open(r) ;
             TextIndexConfig config = new TextIndexConfig(docDef);
@@ -247,6 +306,10 @@ public class TextIndexLuceneAssembler extends AssemblerBase {
             config.setValueStored(storeValues);
             config.setIgnoreIndexErrors(ignoreIndexErrs);
             config.setFacetFields(facetFields);
+            config.setGeoFields(geoFields);
+            config.setGeoFormat(geoFormat);
+            config.setStoreCoordinates(storeCoordinates);
+            config.setDocProducerMode(docProducerMode);
             docDef.setCacheQueries(cacheQueries);
 
             return TextDatasetFactory.createLuceneIndex(directory, config) ;

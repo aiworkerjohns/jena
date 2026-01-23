@@ -55,6 +55,7 @@ import org.apache.lucene.facet.sortedset.DefaultSortedSetDocValuesReaderState;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetCounts;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetField;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesReaderState;
+import org.apache.lucene.geo.Polygon;
 import org.apache.lucene.index.*;
 import org.apache.lucene.queryparser.classic.ParseException ;
 import org.apache.lucene.queryparser.classic.QueryParser ;
@@ -64,6 +65,7 @@ import org.apache.lucene.queryparser.surround.query.BasicQueryFactory;
 import org.apache.lucene.search.*;
 import org.apache.lucene.search.highlight.*;
 import org.apache.lucene.store.Directory ;
+import org.apache.jena.query.text.geo.*;
 import org.slf4j.Logger ;
 import org.slf4j.LoggerFactory ;
 
@@ -106,6 +108,11 @@ public class TextIndexLucene implements TextIndex {
     private Map<String, Analyzer> multilingualQueryAnalyzers = new HashMap<>();
     private final List<String> facetFields;
     private final FacetsConfig facetsConfig;
+
+    // Geo/spatial configuration
+    private final List<String> geoFields;
+    private final String geoFormat;
+    private final boolean storeCoordinates;
 
     // The IndexWriter can't be final because we may have to recreate it if rollback() is called.
     // However, it needs to be volatile in case the next write transaction is on a different thread,
@@ -180,6 +187,15 @@ public class TextIndexLucene implements TextIndex {
         }
         if (!this.facetFields.isEmpty()) {
             log.info("Faceting enabled for fields: {}", this.facetFields);
+        }
+
+        // Initialize geo/spatial configuration
+        this.geoFields = new ArrayList<>(config.getGeoFields());
+        this.geoFormat = config.getGeoFormat();
+        this.storeCoordinates = config.isStoreCoordinates();
+        if (!this.geoFields.isEmpty()) {
+            log.info("Geo indexing enabled for fields: {}, format: {}, storeCoordinates: {}",
+                this.geoFields, this.geoFormat, this.storeCoordinates);
         }
 
         openIndexWriter();
@@ -365,8 +381,25 @@ public class TextIndexLucene implements TextIndex {
         for ( Entry<String, Object> e : entity.getMap().entrySet() ) {
             String field = e.getKey();
             String value = (String) e.getValue();
-            FieldType ft = (docDef.getNoIndex(field)) ? ftTextStoredNoIndex : ftText ;
-            doc.add( new Field(field, value, ft) );
+
+            // Check if this is a geo field
+            if (geoFields.contains(field) && value != null && !value.isEmpty()) {
+                // Handle geo field - parse WKT and add appropriate Lucene geo fields
+                try {
+                    addGeoFields(doc, field, value);
+                } catch (Exception ex) {
+                    log.warn("Failed to parse geo value for field '{}': {} - value: {}",
+                        field, ex.getMessage(), value);
+                    // Still add as text field for fallback
+                    FieldType ft = (docDef.getNoIndex(field)) ? ftTextStoredNoIndex : ftText;
+                    doc.add(new Field(field, value, ft));
+                }
+            } else {
+                // Standard text field
+                FieldType ft = (docDef.getNoIndex(field)) ? ftTextStoredNoIndex : ftText ;
+                doc.add( new Field(field, value, ft) );
+            }
+
             // Add SortedSetDocValuesFacetField for fields configured for faceting
             if (facetFields.contains(field) && value != null && !value.isEmpty()) {
                 doc.add(new SortedSetDocValuesFacetField(field, value));
@@ -398,6 +431,98 @@ public class TextIndexLucene implements TextIndex {
             }
         }
         return doc ;
+    }
+
+    /**
+     * Add geo fields to a Lucene document from a WKT value.
+     * Adds LatLonPoint for spatial queries and optionally stored fields for coordinate retrieval.
+     *
+     * @param doc The Lucene document
+     * @param field The field name
+     * @param wktValue The WKT value (e.g., "POINT(-122.4 37.8)")
+     */
+    private void addGeoFields(Document doc, String field, String wktValue) {
+        if (WKTParser.isPoint(wktValue)) {
+            WKTParser.Point point = WKTParser.parsePoint(wktValue);
+
+            // Add LatLonPoint for spatial queries (bbox, distance)
+            doc.add(new LatLonPoint(field, point.latitude, point.longitude));
+
+            // Add LatLonShape for polygon queries (intersects, within)
+            // Note: For points, we create a point shape
+            Field[] shapeFields = LatLonShape.createIndexableFields(field + "_shape", point.latitude, point.longitude);
+            for (Field f : shapeFields) {
+                doc.add(f);
+            }
+
+            // Store coordinates for retrieval if configured
+            if (storeCoordinates) {
+                doc.add(new StoredField(field + "_lat", point.latitude));
+                doc.add(new StoredField(field + "_lon", point.longitude));
+            }
+
+            // Also store the original WKT value
+            doc.add(new StoredField(field + "_wkt", wktValue));
+
+            log.trace("Added geo point: field={}, lat={}, lon={}", field, point.latitude, point.longitude);
+        } else if (WKTParser.isPolygon(wktValue)) {
+            // For polygons, we still index as a shape for queries
+            // but we compute the centroid for LatLonPoint queries
+            Polygon polygon = WKTParser.parsePolygon(wktValue);
+
+            // Add the polygon shape for intersection/within queries
+            Field[] shapeFields = LatLonShape.createIndexableFields(field + "_shape", polygon);
+            for (Field f : shapeFields) {
+                doc.add(f);
+            }
+
+            // Compute centroid for point-based queries
+            double[] centroid = computePolygonCentroid(polygon);
+            if (centroid != null) {
+                doc.add(new LatLonPoint(field, centroid[0], centroid[1]));
+
+                if (storeCoordinates) {
+                    doc.add(new StoredField(field + "_lat", centroid[0]));
+                    doc.add(new StoredField(field + "_lon", centroid[1]));
+                }
+            }
+
+            // Store the original WKT value
+            doc.add(new StoredField(field + "_wkt", wktValue));
+
+            log.trace("Added geo polygon: field={}, centroid=[{}, {}]", field,
+                centroid != null ? centroid[0] : "null", centroid != null ? centroid[1] : "null");
+        } else {
+            throw new IllegalArgumentException("Unsupported WKT geometry type: " + wktValue);
+        }
+    }
+
+    /**
+     * Compute the centroid of a polygon (simple average of vertices).
+     * Returns [latitude, longitude] or null if computation fails.
+     */
+    private double[] computePolygonCentroid(Polygon polygon) {
+        try {
+            double[] lats = polygon.getPolyLats();
+            double[] lons = polygon.getPolyLons();
+
+            if (lats == null || lats.length == 0) {
+                return null;
+            }
+
+            double sumLat = 0, sumLon = 0;
+            // Don't include closing point in average (it duplicates the first point)
+            int n = lats.length - 1;
+            for (int i = 0; i < n; i++) {
+                sumLat += lats[i];
+                sumLon += lons[i];
+            }
+
+            return new double[] { sumLat / n, sumLon / n };
+        } catch (Exception e) {
+            log.warn("Failed to compute polygon centroid: {}", e.getMessage());
+            return null;
+        }
     }
 
     @Override
@@ -1093,5 +1218,242 @@ public class TextIndexLucene implements TextIndex {
      */
     public List<String> getFacetFields() {
         return Collections.unmodifiableList(facetFields);
+    }
+
+    // ========== Geo/Spatial Query Support ==========
+
+    /**
+     * Check if geo indexing is enabled for any fields.
+     * @return true if at least one field is configured for geo indexing
+     */
+    public boolean isGeoEnabled() {
+        return !geoFields.isEmpty();
+    }
+
+    /**
+     * Get the list of fields configured for geo indexing.
+     * @return unmodifiable list of geo field names
+     */
+    public List<String> getGeoFields() {
+        return Collections.unmodifiableList(geoFields);
+    }
+
+    /**
+     * Execute a combined text + geo + facets search.
+     *
+     * @param params Search parameters including text query, geo filter, and facet fields
+     * @return GeoFacetedResults containing hits with coordinates and facet counts
+     */
+    public GeoFacetedResults searchWithGeoAndFacets(GeoSearchParams params) {
+        try (IndexReader indexReader = DirectoryReader.open(directory)) {
+            return searchWithGeoAndFacets$(indexReader, params);
+        } catch (ParseException ex) {
+            throw new TextIndexParseException(params.getTextQuery(), ex.getMessage());
+        } catch (Exception ex) {
+            throw new TextIndexException("searchWithGeoAndFacets", ex);
+        }
+    }
+
+    /**
+     * Internal implementation of searchWithGeoAndFacets.
+     */
+    private GeoFacetedResults searchWithGeoAndFacets$(IndexReader indexReader, GeoSearchParams params)
+            throws ParseException, IOException {
+
+        IndexSearcher searcher = new IndexSearcher(indexReader);
+
+        // Build the combined query
+        Query query = buildCombinedQuery(params);
+
+        // Execute search
+        int maxResults = params.getMaxResults();
+        TopDocs topDocs = searcher.search(query, maxResults);
+
+        // Compute facets if requested
+        Map<String, List<FacetValue>> facets = new HashMap<>();
+        if (params.hasFacets() && !params.getFacetFields().isEmpty()) {
+            facets = computeFacetsForQuery(searcher, query, params.getFacetFields(), params.getMaxFacetValues());
+        }
+
+        // Extract hits with coordinates
+        List<GeoTextHit> hits = extractGeoHits(searcher, topDocs.scoreDocs, params.getGeoField());
+
+        return new GeoFacetedResults(hits, facets, topDocs.totalHits.value());
+    }
+
+    /**
+     * Build a combined Lucene query from search parameters.
+     * Combines text query with geo filter using BooleanQuery.
+     */
+    private Query buildCombinedQuery(GeoSearchParams params) throws ParseException {
+        BooleanQuery.Builder builder = new BooleanQuery.Builder();
+
+        // Add text query if present
+        if (params.hasTextQuery()) {
+            Query textQuery = parseQuery(params.getTextQuery(), queryAnalyzer);
+            builder.add(textQuery, BooleanClause.Occur.MUST);
+        }
+
+        // Add geo filter if present
+        if (params.hasGeoQuery()) {
+            Query geoQuery = buildGeoQuery(params);
+            builder.add(geoQuery, BooleanClause.Occur.FILTER);
+        }
+
+        // If no text query, we need at least one MUST or SHOULD clause
+        // Use MatchAllDocsQuery as the base
+        BooleanQuery bq = builder.build();
+        if (bq.clauses().isEmpty()) {
+            return new MatchAllDocsQuery();
+        }
+
+        // If only FILTER clauses, add MatchAllDocsQuery as MUST
+        boolean hasNonFilter = bq.clauses().stream()
+            .anyMatch(c -> c.occur() != BooleanClause.Occur.FILTER);
+        if (!hasNonFilter) {
+            builder.add(new MatchAllDocsQuery(), BooleanClause.Occur.MUST);
+            return builder.build();
+        }
+
+        return bq;
+    }
+
+    /**
+     * Build a Lucene geo query from search parameters.
+     */
+    private Query buildGeoQuery(GeoSearchParams params) {
+        String field = params.getGeoField();
+
+        switch (params.getGeoQueryType()) {
+            case BBOX:
+                // Use LatLonPoint for bbox queries
+                return LatLonPoint.newBoxQuery(field,
+                    params.getMinLat(), params.getMaxLat(),
+                    params.getMinLon(), params.getMaxLon());
+
+            case DISTANCE:
+                // Use LatLonPoint for distance queries (radius in meters)
+                double radiusMeters = params.getRadiusKm() * 1000.0;
+                return LatLonPoint.newDistanceQuery(field,
+                    params.getCenterLat(), params.getCenterLon(), radiusMeters);
+
+            case INTERSECTS:
+                // Use LatLonShape for polygon intersection
+                return LatLonShape.newGeometryQuery(field + "_shape",
+                    ShapeField.QueryRelation.INTERSECTS, params.getPolygon());
+
+            case WITHIN:
+                // Use LatLonShape for within polygon
+                return LatLonShape.newGeometryQuery(field + "_shape",
+                    ShapeField.QueryRelation.WITHIN, params.getPolygon());
+
+            default:
+                throw new IllegalArgumentException("Unknown geo query type: " + params.getGeoQueryType());
+        }
+    }
+
+    /**
+     * Compute facet counts for a query.
+     */
+    private Map<String, List<FacetValue>> computeFacetsForQuery(IndexSearcher searcher, Query query,
+            List<String> facetFields, int maxValues) throws IOException {
+
+        Map<String, List<FacetValue>> result = new HashMap<>();
+
+        if (facetFields == null || facetFields.isEmpty()) {
+            return result;
+        }
+
+        // Use FacetsCollector to collect facets during search
+        FacetsCollector fc = new FacetsCollector();
+        searcher.search(query, fc);
+
+        // Create reader state for facets
+        SortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(
+            searcher.getIndexReader(), facetsConfig);
+        Facets facets = new SortedSetDocValuesFacetCounts(state, fc);
+
+        // Extract results for each field
+        for (String field : facetFields) {
+            List<FacetValue> fieldFacets = new ArrayList<>();
+            try {
+                FacetResult facetResult = facets.getTopChildren(maxValues, field);
+                if (facetResult != null && facetResult.labelValues != null) {
+                    for (LabelAndValue lv : facetResult.labelValues) {
+                        fieldFacets.add(new FacetValue(lv.label, lv.value.longValue()));
+                    }
+                }
+            } catch (IllegalArgumentException e) {
+                // Field not found or no facet data
+                log.debug("No facet data for field '{}': {}", field, e.getMessage());
+            }
+            result.put(field, fieldFacets);
+        }
+
+        return result;
+    }
+
+    /**
+     * Extract geo hits from search results.
+     */
+    private List<GeoTextHit> extractGeoHits(IndexSearcher searcher, ScoreDoc[] scoreDocs, String geoField)
+            throws IOException {
+
+        List<GeoTextHit> hits = new ArrayList<>();
+        StoredFields storedFields = searcher.storedFields();
+        String entityField = docDef.getEntityField();
+
+        for (ScoreDoc sd : scoreDocs) {
+            Document doc = storedFields.document(sd.doc);
+
+            // Get entity URI
+            String uri = doc.get(entityField);
+            if (uri == null) continue;
+
+            Node entityNode = NodeFactory.createURI(uri);
+
+            // Get coordinates if available
+            double lat = Double.NaN;
+            double lon = Double.NaN;
+
+            if (geoField != null) {
+                IndexableField latField = doc.getField(geoField + "_lat");
+                IndexableField lonField = doc.getField(geoField + "_lon");
+
+                if (latField != null && lonField != null) {
+                    lat = latField.numericValue().doubleValue();
+                    lon = lonField.numericValue().doubleValue();
+                }
+            }
+
+            // Get literal if available
+            Node literal = null;
+            String primaryField = docDef.getPrimaryField();
+            if (primaryField != null) {
+                String lexical = doc.get(primaryField);
+                if (lexical != null) {
+                    String langValue = doc.get(docDef.getLangField());
+                    if (langValue != null && !langValue.isEmpty() && !langValue.startsWith(DATATYPE_PREFIX)) {
+                        literal = NodeFactory.createLiteralLang(lexical, langValue);
+                    } else {
+                        literal = NodeFactory.createLiteralString(lexical);
+                    }
+                }
+            }
+
+            // Get graph if available
+            Node graph = null;
+            String graphField = docDef.getGraphField();
+            if (graphField != null) {
+                String graphUri = doc.get(graphField);
+                if (graphUri != null) {
+                    graph = TextQueryFuncs.stringToNode(graphUri);
+                }
+            }
+
+            hits.add(new GeoTextHit(entityNode, sd.score, lat, lon, literal, graph, null));
+        }
+
+        return hits;
     }
 }

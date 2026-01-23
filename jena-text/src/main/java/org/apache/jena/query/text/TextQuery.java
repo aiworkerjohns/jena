@@ -78,6 +78,14 @@ public class TextQuery
                 }
             });
 
+            // Register combined text + geo + facets search property function
+            PropertyFunctionRegistry.get().put("http://jena.apache.org/text#search", new PropertyFunctionFactory() {
+                @Override
+                public PropertyFunction create(String uri) {
+                    return new TextSearchPF() ;
+                }
+            });
+
             JenaSystem.logLifecycle("TextQuery.init - finish") ;
             // Register indirections.
             InitTextCmds.cmds();
