@@ -1,0 +1,26 @@
+# Licensed under the terms of http://www.apache.org/licenses/LICENSE-2.0
+# Semantic search combined with a typed structural filter and facet counts.
+#
+# This is the combination the whole feature exists for: a nearest-neighbour search
+# whose CQL2-JSON filter is pushed INTO the HNSW graph traversal, not applied to its
+# result. Post-filtering a top-k result — what a vector store bolted alongside a
+# triplestore would do — returns fewer than k documents, or none, when the filter is
+# selective.
+#
+# Facet counts over a vector query are scoped to the top-k, because a similarity
+# search has no "all matching documents" to count over. See docs/02-sparql-api.md.
+
+PREFIX luc: <urn:jena:lucene:index#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?entity ?score ?label
+WHERE {
+    (?hit ?entity ?score) luc:query (
+        "default"
+        '["urn:jena:lucene:field#embedding"]'
+        "copper ore drilling in the goldfields"
+        '{"op":"=","args":[{"property":"urn:jena:lucene:field#state"},"WA"]}'
+        "" 10 0) .
+    ?entity rdfs:label ?label .
+}
+ORDER BY DESC(?score)

@@ -126,6 +126,18 @@
                 </div>
               </div>
 
+              <!--
+                Semantic mode swaps the fieldSpec argument of luc:query from "default" to
+                the embedding field's IRI. That single change is what turns the search box
+                from a Lucene query expression into text to be embedded — everything else
+                about the query, including the filters and facet counts below, is untouched.
+              -->
+              <label class="semantic-toggle">
+                <input type="checkbox" x-model="semantic" @change="search()">
+                <span>Semantic search</span>
+                <span class="semantic-hint" x-show="semantic">nearest-neighbour over title + description</span>
+              </label>
+
               <div class="limit-row">
                 <div class="limit-control">
                   <label class="limit-label">Results</label>

@@ -9,6 +9,9 @@ const APP_CONFIG = window.APP_CONFIG || {};
 const FUSEKI_BASE = APP_CONFIG.fusekiBase || 'http://localhost:3030';
 const RESULT_LIMITS = [10, 100, 1000, 5000, 9999];
 const DEFAULT_LIMIT = 10;
+// The vector field declared by MiningReportShape in config.ttl. Naming it in a
+// luc:query fieldSpec switches that query from full-text to nearest-neighbour.
+const EMBEDDING_FIELD_IRI = 'urn:jena:lucene:field#embedding';
 const FACET_LIMITS = [10, 25, 50, 100, 500];
 const DEFAULT_FACET_LIMIT = 10;
 const IDENTIFIER_SUGGESTION_LIMIT = 10;
@@ -975,6 +978,9 @@ function parseWktForLeaflet(wktString) {
 function searchApp() {
     return {
         q: '',
+        // Semantic (vector) search. Off by default: it needs query text, so it has no
+        // match-all form, and the landing view is a match-all.
+        semantic: false,
         limit: DEFAULT_LIMIT,
         currentPage: 1,
         resultLimits: RESULT_LIMITS,
@@ -1680,8 +1686,9 @@ LIMIT 100`);
                 const childLevel = levels[1];
                 const parentLevelIRI = parentLevel.iri;
 
-                const term = this.q.trim() || '*';
-                const searchField = 'default';
+                const useSemantic = this.semantic && this.q.trim().length > 0;
+                const term = useSemantic ? this.q.trim() : (this.q.trim() || '*');
+                const searchField = useSemantic ? JSON.stringify([EMBEDDING_FIELD_IRI]) : 'default';
 
                 const hierFilter = JSON.stringify({
                     op: '=',
@@ -2153,9 +2160,19 @@ SELECT ?value ?count WHERE {
             ]);
         },
 
+        // The fieldSpec argument of luc:query and luc:facet. Naming the vector field
+        // makes the query string text to embed rather than a Lucene expression; "default"
+        // keeps the existing full-text behaviour.
+        searchFieldSpec() {
+            return this.semantic ? JSON.stringify([EMBEDDING_FIELD_IRI]) : 'default';
+        },
+
         buildSearchQuery(includeFacets = true) {
-            const term = this.q.trim() || '*';
-            const searchField = 'default';
+            // A similarity search has no match-all form — there is no point to be near —
+            // so an empty box falls back to full-text rather than erroring.
+            const useSemantic = this.semantic && this.q.trim().length > 0;
+            const term = useSemantic ? this.q.trim() : (this.q.trim() || '*');
+            const searchField = useSemantic ? JSON.stringify([EMBEDDING_FIELD_IRI]) : 'default';
             const escaped = escapeSparql(term);
             const cqlFilter = buildCqlFilter(
                 this.selected,

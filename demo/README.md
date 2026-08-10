@@ -47,6 +47,43 @@ listener refuses to touch those documents rather than silently dropping them. On
 no external source — reports and sites — but boreholes will be missing their assays
 until the next `task index`.
 
+## Semantic (vector) search
+
+`MiningReportShape` carries an `idx:vectorField`, so reports can be searched by meaning
+rather than by keyword. Tick **Semantic search** under the search box in the app, or run:
+
+```bash
+task query   # includes 24-semantic-search.rq and 25-semantic-search-filtered.rq
+```
+
+The only thing that changes in the SPARQL is the `fieldSpec` argument — `"default"` becomes
+`'["urn:jena:lucene:field#embedding"]'` — which makes the search string text to embed
+instead of a Lucene expression. Filters, facets and paging behave as they always did, with
+one documented exception: facet counts and `?totalHits` over a vector query are scoped to
+the k nearest neighbours rather than the whole corpus.
+
+### The default provider is not semantic
+
+Out of the box the demo uses the `hashing` provider, so `task serve` works with no
+downloads. **It compares words, not meaning** — it exists to demonstrate the query shape.
+"copper" and "cuprous ore" are as unrelated to it as "copper" and "Tuesday".
+
+For real semantic search, uncomment the `jlama` block in `test/config.ttl`, set
+`idx:dimension` to `384` on both `field:embedding` and the embedding block, then:
+
+```bash
+task index-jlama    # downloads ~130MB from HuggingFace into test/models on first run
+task serve-jlama
+```
+
+Those tasks exist because `jena-text-embeddings` is deliberately **not** a dependency of
+the Fuseki server jar — an ML runtime should not ship by default with the text index — so
+they assemble a classpath instead. They also pass `--add-modules jdk.incubator.vector`,
+which is not optional for Jlama.
+
+Changing provider or model requires a full reindex: Lucene fixes a KNN field's dimension at
+index time, and vectors from two different models are not comparable.
+
 ## External assay data
 
 `test/data/assays.csv` is a small CSV of borehole assay results, keyed by **borehole

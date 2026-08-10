@@ -2279,3 +2279,19 @@ details[open] > summary .jt-count::before { content: '▼ '; }
   color: var(--text-muted);
   vertical-align: 1px;
 }
+
+/* Semantic-search toggle. Sits directly under the search box because it changes what
+   the box means, not what is done with its result. */
+.semantic-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.semantic-toggle .semantic-hint {
+  color: #6b7280;
+  font-size: 0.75rem;
+}

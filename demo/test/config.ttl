@@ -45,7 +45,33 @@ PREFIX schema:  <https://schema.org/>
     text:taxonomyDirectory <file:Taxonomy> ;
     text:shapes ( :MiningReportShape :BoreholeShape :SiteShape ) ;
     text:storeValues false ;
-    text:maxFacetHits 50000 .
+    text:maxFacetHits 50000 ;
+
+    ## Embedding engine for the idx:VectorField below.
+    ##
+    ## "hashing" is the offline default: it ships in jena-text, needs no model download,
+    ## and makes `task serve` work out of the box. It hashes words into vector components,
+    ## so it measures LEXICAL OVERLAP, NOT MEANING — "copper" and "cuprous ore" are as
+    ## unrelated to it as "copper" and "Tuesday". It is here to demonstrate the query
+    ## shape, not the retrieval quality.
+    ##
+    ## For actual semantic search, switch to the block below and use `task index-jlama`
+    ## / `task serve-jlama`, which put the optional jena-text-embeddings module on the
+    ## classpath. The first run downloads ~130MB from HuggingFace into ./models.
+    ##
+    ##   idx:embedding [
+    ##       idx:provider "jlama" ;
+    ##       idx:model "BAAI/bge-small-en-v1.5" ;
+    ##       idx:modelPath "models" ;
+    ##   ] ;
+    ##
+    ## Changing provider or model means REINDEXING: Lucene fixes a KNN field's dimension
+    ## at index time, and vectors from two different models are not comparable at all.
+    ## Remember to set idx:dimension to 384 for bge-small-en-v1.5.
+    idx:embedding [
+        idx:provider "hashing" ;
+        idx:dimension 64 ;
+    ] .
 
 ## --- Field definitions (canonical, path-free) ---
 
@@ -66,6 +92,19 @@ field:description
     idx:fieldType idx:TextField ;
     idx:stored true ;
     idx:defaultSearch true .
+
+## Dense vector over the report's prose. It has no sh:path of its own — a vector field
+## is DERIVED, not extracted: idx:embeddingSource names the fields whose values are
+## joined and embedded, in that order. It is attached to a shape with idx:vectorField.
+##
+## idx:dimension must match what the provider produces (64 for "hashing",
+## 384 for bge-small-en-v1.5 / e5-small-v2 / arctic-embed-s).
+field:embedding
+    idx:fieldName "embedding" ;
+    idx:fieldType idx:VectorField ;
+    idx:dimension 64 ;
+    idx:similarity idx:Cosine ;
+    idx:embeddingSource ( field:title field:description ) .
 
 field:commodity
     idx:fieldName "commodity" ;
@@ -287,6 +326,12 @@ field:belowDetection
     sh:property [ idx:field field:year ; sh:path ex:year ] ;
     sh:property [ idx:field field:publishedOn ; sh:path ex:publishedOn ] ;
     sh:property [ idx:field field:indexedAt ; sh:path ex:indexedAt ] ;
+
+    ## Semantic search over title + description. Reachable by naming this field in
+    ## luc:query's fieldSpec; it is deliberately not idx:defaultSearch, because
+    ## "default" selects fields for the Lucene query parser, which a vector has no
+    ## part in.
+    idx:vectorField field:embedding ;
     sh:property [ idx:field field:reviewNote ; sh:path ex:reviewNote ] ;
     sh:property [ idx:field field:qaPassed ; sh:path ex:qaPassed ] ;
     sh:property [ idx:field field:confidenceScore ; sh:path ex:confidenceScore ] ;

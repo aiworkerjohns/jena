@@ -1,0 +1,20 @@
+# Licensed under the terms of http://www.apache.org/licenses/LICENSE-2.0
+# Semantic (vector) search over mining report prose.
+#
+# Naming a vector field in the fieldSpec — the second argument — changes what the
+# third argument means: it is no longer a Lucene query expression but plain text to
+# be embedded and matched by nearest-neighbour similarity. Everything else about
+# luc:query is unchanged, which is the point of routing it through fieldSpec.
+#
+# NOTE: the demo's default embedding provider is "hashing", which compares words,
+# not meaning. Switch config.ttl to the jlama provider for real semantic results.
+
+PREFIX luc: <urn:jena:lucene:index#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?entity ?score ?label
+WHERE {
+    (?hit ?entity ?score) luc:query ("default" '["urn:jena:lucene:field#embedding"]' "copper ore drilling in the goldfields" "" "" 10 0) .
+    ?entity rdfs:label ?label .
+}
+ORDER BY DESC(?score)
