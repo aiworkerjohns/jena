@@ -270,9 +270,18 @@ field:reviewMonth
     sh:property [ idx:field field:code       ; sh:path kt:code ] ;
     sh:property [ idx:field field:codeText   ; sh:path kt:code ] ;
 
-    ## FEATURE 4 — two levels, read independently from the entity and cross-produced.
-    ## Correct here because each recipe has exactly one country and therefore exactly one
-    ## region: there is no cartesian product to get wrong.
+    ## FEATURE 4 — a root-level hierarchy. Its levels are read INDEPENDENTLY from the
+    ## entity and cross-produced, which is correct here only because each recipe has exactly
+    ## one country and therefore exactly one region: there is no cartesian product to get
+    ## wrong. Were a recipe to carry two countries in different regions, this would offer
+    ## region/country pairs that are not in the data. A hierarchy whose levels are genuinely
+    ## pairwise related belongs inside an idx:nested block, like reviewer_stars_reviewMonth
+    ## above, where the levels correlate per child record.
+    ##
+    ## Because the relationship is 1:1, this dimension is also indistinguishable from two
+    ## flat facets by its counts alone. It is a real taxonomy dimension — asking for
+    ## "region_country" returns REGIONS, which no flat field can do — but query 19 is the
+    ## one that demonstrates drilling that could not be faked.
     idx:facetHierarchy ( field:region field:country ) ;
 
     ## FEATURE 8 — no sh:path, so it attaches here.
@@ -303,7 +312,16 @@ field:reviewMonth
         ## is NOT available as an entity-level flat facet, so `luc:facet` on field:reviewer
         ## alone returns nothing at all. The hierarchy dimension is how these values get
         ## counted.
-        idx:facetHierarchy ( field:reviewer field:stars ) ;
+        ## THREE levels, and drilling is a path: an "=" on reviewer returns that reviewer's
+        ## ratings, an "=" on reviewer AND stars returns the months of those ratings. Nothing
+        ## in the API caps this at two.
+        ##
+        ## This is also the dimension that PROVES the drill-down is a taxonomy rather than
+        ## two flat facets, because the levels are correlated per review row — see
+        ## queries 17 and 19. The region/country hierarchy below cannot prove it: each
+        ## recipe has exactly one country, so its counts happen to match what
+        ## "filter by region, flat-count country" would give.
+        idx:facetHierarchy ( field:reviewer field:stars field:reviewMonth ) ;
     ] .
 
 ## ==========================================================================

@@ -55,7 +55,7 @@ access.
 | 3b | KEYWORD on IRIs | `idx:KeywordField` | `10` | every facet checkbox |
 | 3c | Edge n-gram | `text:EdgeNGramAnalyzer` + `text:tokenized` | `08` | Code typeahead mode |
 | 3d | INT / range facets | `idx:IntField` | `07` | "Prep time" buckets |
-| 4 | Hierarchical faceting | `idx:facetHierarchy` (root **and** nested) | `04`, `05`, `17` | Region › country, Reviewer › stars |
+| 4 | Hierarchical faceting, **3 levels** | `idx:facetHierarchy` (root **and** nested) | `04`, `05`, `17`, `19` | Region › country, Reviewer › stars › month |
 | 5 | One field, many paths **and many shapes** | repeated `sh:property` occurrences | `09`, `18` | "People (author or tester)", and the Recipes / Reviewers / Both toggle |
 | 6 | Match projection | `idx:stored` | `11`, `12` | Index view panel, and the "matched on" line |
 | 7 | External CSV, **unstored** | `idx:externalSource` + `idx:stored false` | `12`, `13`, `17` | Reviews panel, and the review list on each card |
@@ -335,6 +335,33 @@ because the drill path is then complete and the server is being asked for a thir
 that does not exist. Both levels stay on screen with the chosen values ticked, and sibling
 counts stay correct because they are computed under the *other* active filters. Solr and
 Elasticsearch spell the same idea as excluding a tagged filter.
+
+**Region › country is a real taxonomy dimension, but it proves nothing.** Asking for the
+dimension `region_country` returns *regions*, which no flat field can do — `field:country`
+returns countries — and it needs the on-disk `text:taxonomyDirectory` that only a taxonomy
+uses. But every recipe has exactly one country, so its counts are identical to what
+"filter by region, then flat-count country" would give. As a demonstration it is worthless;
+as a hierarchy it is genuine. Query `19` is the one that discriminates.
+
+**Drilling is a path, and it is not capped at two levels.** `reviewer_stars_reviewMonth`
+has three, and the server returns the children of whatever path the `=` clauses describe:
+
+```
+level 1   no filter               ->  Priya 6, Noor 5, Tomas 4, Yuki 4, Ines 3, Kwame 3
+level 2   = Priya                 ->  ★★★★★ 3, ★★ 1, ★★★★ 1, ★★★ 1
+level 3   = Priya AND = 5 stars   ->  2024-02, 2024-04, 2025-11
+```
+
+Level 3 is the proof. Those three recipes carry **nine** review rows between them, and a
+flat count of the month field would return all nine months. Three come back, because the
+taxonomy holds the whole path per review row and only Priya's five-star rows contribute.
+It could not be faked with flat facets regardless: a child-scoped field has no
+entity-level flat facet at all.
+
+**Adding a level renames the dimension.** `reviewer_stars` became
+`reviewer_stars_reviewMonth` when the third level went in, and a query naming the old one
+silently returns nothing rather than erroring. This bit query `17` while it was being
+written. The app reads the current names from `/$/config/effective` for that reason.
 
 **A nested hierarchy's levels are correlated per child record, not cross-produced.** This
 is the guarantee that makes drilling into `Reviewer › stars` mean anything, and query `17`

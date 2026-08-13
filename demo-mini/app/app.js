@@ -30,25 +30,40 @@ const dateAxis = { years: [] };
 const kinds = { classes: [] };
 
 /**
- * Facet panels, in display order. `dimension` marks the hierarchical one.
+ * The hierarchical dimensions, each an ordered list of levels.
  *
- * The two dimension names are filled in from /$/config/effective at startup — they are
- * derived by joining the levels' idx:fieldName values with "_", which is not something
- * this client should be asserting for itself.
+ * `key` is filled in from /$/config/effective at startup: a dimension is named by joining
+ * its levels' idx:fieldName values with "_", which is not something this client should be
+ * asserting for itself.
+ *
+ * Nothing here is limited to two levels. Drilling is a PATH, and the server returns the
+ * children of whatever path it is given — so a three-level dimension is the same code with
+ * one more entry in `fields`.
  */
+const DIMS = {
+    region: {
+        key: 'region_country',
+        title: 'Region / country',
+        fields: [F('region'), F('country')],
+        label: 'iri',
+    },
+    review: {
+        key: 'reviewer_stars_reviewMonth',
+        title: null,                      // rendered in its own group in index.html
+        fields: [F('reviewer'), F('stars'), F('reviewMonth')],
+        label: 'plain',
+        // stars is an IntField, so its "=" needs a number and not the string the facet
+        // hands back. Getting this wrong filters nothing and reports no error.
+        cast: [null, Number, null],
+    },
+};
+
+/** Flat facet panels, in display order. */
 const FACETS = [
-    { key: 'region_country', title: 'Region / country', dimension: true },
     { key: F('course'), title: 'Course' },
     { key: F('diet'), title: 'Diet' },
     { key: F('contributor'), title: 'People (author or tester)', note: 'one field, two SHACL paths' },
 ];
-
-/**
- * Reviews come from the CSV, so they are child-scoped, and a child-scoped field has no
- * entity-level flat facet — luc:facet on field:reviewer alone returns nothing. Their
- * counts are only reachable through this nested hierarchy dimension.
- */
-const REVIEW_DIM = { key: 'reviewer_stars' };
 
 const PREP_RANGES = [null, 20, 60, 240, null];
 
@@ -58,25 +73,29 @@ const TESTS = [
     '09-fanin-contributor', '10-keyword-iri-filter', '11-match', '12-nested-match-reviews',
     '13-nested-correlation', '14-sort-and-page', '15-vector-search', '16-vector-filtered',
     '17-nested-hierarchy-correlated', '18-one-field-many-paths-many-shapes',
+    '19-three-level-drilldown',
 ];
 
 const state = {
     q: '', mode: 'bm25', sort: '', page: 0,
     sel: {},            // fieldIRI -> Set of values (multi-select)
-    region: null,       // hierarchy drill-down: the selected parent level
-    country: null,
-    // null means "the whole span", which is not a filter at all. Otherwise [lo, hi] are
-    // indices into dateAxis.years, so the slider and the filter cannot disagree.
+    /*
+     * One entry per hierarchical dimension.
+     *   path  — the values currently expanded, outermost first. Expanding is free: it asks
+     *           luc:facet for that path's children and narrows nothing.
+     *   depth — how many of those path values are ALSO filters. Ticking a box at level i
+     *           sets depth to i+1; the twisty leaves depth alone.
+     * Keeping them apart is what lets a node be opened without being filtered by.
+     */
+    drill: { region: { path: [], depth: 0 }, review: { path: [], depth: 0 } },
     // null = both kinds. Only two shapes exist, so "both" is genuinely the absence of a
     // filter rather than an "in" of every class.
     kind: null,
+    // null means "the whole span", which is not a filter at all. Otherwise [lo, hi] are
+    // indices into dateAxis.years, so the slider and the filter cannot disagree.
     yearIdx: null,
-    minStars: '', reviewer: null, starsExact: null,
+    minStars: '',
     prepBucket: null,   // [low, high]
-    // Which hierarchy nodes are OPEN, which is not the same as which are FILTERED.
-    // luc:facet takes its own cqlFilter, so a node's children can be fetched with an "="
-    // that never reaches the results query — browsing the tree without narrowing anything.
-    open: { region: new Set(), reviewer: new Set() },
     config: null,
 };
 
@@ -132,14 +151,19 @@ function buildFilter(skip = {}, pin = {}) {
 
     // A "=" on a hierarchy level both narrows the results AND tells luc:facet to return
     // that level's children. One clause, both jobs — there is no drill-down argument.
-    // `pin` overrides the selection: it is how "show me Asia's countries" is expressed
-    // without Asia being a filter on the results.
-    const region = pin.region ?? (skip.region ? null : state.region);
-    const country = pin.country ?? (skip.country ? null : state.country);
-    if (region) clauses.push(eq(F('region'), region));
-    if (country) clauses.push(eq(F('country'), country));
 
     if (state.kind && !skip.kind) clauses.push(eq(F('entityType'), state.kind));
+
+    // Each dimension contributes the leading `depth` values of its path as "=" clauses.
+    // `pin` overrides that for one dimension, which is how a level's children are requested
+    // without the path becoming a filter on the results.
+    for (const [id, dim] of Object.entries(DIMS)) {
+        const values = pin[id] ?? (skip[id] ? [] : state.drill[id].path.slice(0, state.drill[id].depth));
+        values.forEach((v, i) => {
+            const cast = dim.cast?.[i];
+            clauses.push(eq(dim.fields[i], cast ? cast(v) : v));
+        });
+    }
 
     if (state.yearIdx && !skip.date) {
         const [lo, hi] = state.yearIdx;
@@ -157,11 +181,7 @@ function buildFilter(skip = {}, pin = {}) {
     // compiler folds them into one block join: ONE review must satisfy both. Selecting
     // "Priya" and "5" finds recipes Priya rated 5 — not recipes Priya reviewed that someone
     // else rated 5. Selecting a reviewer also drives the reviewer_stars drill-down.
-    const reviewer = pin.reviewer ?? (skip.reviewer ? null : state.reviewer);
-    if (reviewer) clauses.push(eq(F('reviewer'), reviewer));
-    if (state.starsExact !== null && !skip.stars) {
-        clauses.push(eq(F('stars'), state.starsExact));
-    } else if (state.minStars && !skip.stars) {
+    if (state.minStars && !skip.review) {
         clauses.push({ op: '>=', args: [prop(F('stars')), Number(state.minStars)] });
     }
 
@@ -526,8 +546,6 @@ async function run() {
     el('debug-sparql').textContent = searchQuery() + '\n\n/* facets */\n' + facetQuery();
     renderModeNote();
 
-    const openRegions = [...state.open.region];
-    const openReviewers = [...state.open.reviewer];
 
     // Each hierarchy level is its own request, omitting the filter for the level being
     // asked about, plus one per OPEN node for its children. That is what costs the extra
@@ -537,8 +555,6 @@ async function run() {
     const jobs = {
         results: sparql(searchQuery()),
         facets: sparql(facetQuery()),
-        regionTop: sparql(levelQuery(FACETS[0].key, { region: true, country: true })),
-        reviewerTop: sparql(levelQuery(REVIEW_DIM.key, { reviewer: true, stars: true })),
         matched: sparql(matchQuery()),
         kinds: sparql(facetQuery({ kind: true }, [F('entityType')])),
         // Counted with the date filter itself skipped, so narrowing the range never
@@ -551,10 +567,14 @@ async function run() {
         // never rejects: the explanation must not be able to take the results down.
         turtle: sparqlTurtle(constructQuery()).catch(err => ({ error: err.message })),
         records: sparqlTurtle(recordQuery()).catch(err => ({ error: err.message })),
-        regionKids: Promise.all(openRegions.map(v =>
-            sparql(levelQuery(FACETS[0].key, { country: true }, { region: v })).then(r => [v, r]))),
-        reviewerKids: Promise.all(openReviewers.map(v =>
-            sparql(levelQuery(REVIEW_DIM.key, { stars: true }, { reviewer: v })).then(r => [v, r]))),
+        // For a dimension whose open path is [a, b], that is three requests: the top level,
+        // a's children, and b's children. Each pins the path it is asking about and is
+        // therefore counted with that dimension's own filter excluded, so a chosen value
+        // never disappears from the list that offered it.
+        levels: Promise.all(Object.entries(DIMS).flatMap(([id, dim]) =>
+            Array.from({ length: state.drill[id].path.length + 1 }, (_, L) =>
+                sparql(levelQuery(dim.key, {}, { [id]: state.drill[id].path.slice(0, L) }))
+                    .then(r => [id, L, r])))),
     };
 
     let done;
@@ -656,12 +676,17 @@ async function renderResults(res, reviews, matched, blocks) {
 
     // Which reviews the current filter picked out, so the ones that made the recipe match
     // can be marked. The index decided WHICH recipes; this decides which rows to highlight.
-    const wantsReviewer = state.reviewer;
-    const wantsStars = state.starsExact !== null ? state.starsExact
-        : state.minStars ? Number(state.minStars) : null;
-    const isMatch = r => (!wantsReviewer && wantsStars === null) ? false
-        : (!wantsReviewer || r.reviewer === wantsReviewer)
-          && (wantsStars === null || (state.starsExact !== null ? r.stars === wantsStars : r.stars >= wantsStars));
+    const { path, depth } = state.drill.review;
+    const wantsReviewer = depth > 0 ? path[0] : null;
+    const wantsStars = depth > 1 ? Number(path[1]) : null;
+    const wantsMonth = depth > 2 ? path[2] : null;
+    const minStars = state.minStars ? Number(state.minStars) : null;
+    const isMatch = r =>
+        (wantsReviewer || wantsStars !== null || wantsMonth || minStars !== null)
+        && (!wantsReviewer || r.reviewer === wantsReviewer)
+        && (wantsStars === null || r.stars === wantsStars)
+        && (!wantsMonth || r.month === wantsMonth)
+        && (minStars === null || r.stars >= minStars);
 
     const pages = Math.ceil(total / PAGE_SIZE);
     el('summary').textContent = total
@@ -749,45 +774,31 @@ async function renderFacets(res) {
             .map(b => ({ value: val(b, 'value'), count: Number(val(b, 'count')) }))
         : [];
 
-    const kidsMap = (pairs, dim) => new Map((pairs || []).map(([v, r]) => [v, valuesOf(r, dim)]));
-
-    const regionTop = valuesOf(res.regionTop, FACETS[0].key);
-    const regionKids = kidsMap(res.regionKids, FACETS[0].key);
-    const reviewerTop = valuesOf(res.reviewerTop, REVIEW_DIM.key);
-    const reviewerKids = kidsMap(res.reviewerKids, REVIEW_DIM.key);
+    // [dimId, level, response] -> levels[dimId][level]
+    const levels = {};
+    for (const [id, L, r] of res.levels || []) {
+        (levels[id] ||= [])[L] = valuesOf(r, DIMS[id].key);
+    }
 
     const iris = [];
     for (const list of groups.values()) list.forEach(x => { if (isIri(x.value)) iris.push(x.value); });
-    regionTop.forEach(x => { if (isIri(x.value)) iris.push(x.value); });
-    regionKids.forEach(list => list.forEach(x => { if (isIri(x.value)) iris.push(x.value); }));
+    for (const list of Object.values(levels).flat()) {
+        (list || []).forEach(x => { if (isIri(x.value)) iris.push(x.value); });
+    }
     const lab = await labels.resolveMany(iris);
     const L = v => lab.get(v) || shortIri(v);
 
-    // Reviewer lives in its own group next to the stars selector, because the two combine
-    // into a single-child filter and belong together in the UI.
     const reviewsGroup = el('group-reviews');
-    if (reviewsGroup) reviewsGroup.style.display = reviewerTop.length ? '' : 'none';
-    el('facet-reviewer').innerHTML = renderTree(reviewerTop, reviewerKids, {
-        parentKind: 'reviewer', childKind: 'stars-exact', openKind: 'open-reviewer',
-        open: state.open.reviewer,
-        parentSel: state.reviewer,
-        childSel: state.starsExact === null ? null : String(state.starsExact),
-        label: v => v, childLabel: v => `<span class="stars">${'★'.repeat(Number(v) || 0)}</span>`,
-    });
+    const anyReviews = (levels.review?.[0] || []).length > 0;
+    if (reviewsGroup) reviewsGroup.style.display = anyReviews ? '' : 'none';
+    el('facet-reviewer').innerHTML = renderDrill('review', levels.review || [], L);
 
     let html = '';
-    if (regionTop.length) {
-        html += `<div class="facet-group"><h3>${esc(FACETS[0].title)}</h3>`
-            + renderTree(regionTop, regionKids, {
-                parentKind: 'region', childKind: 'country', openKind: 'open-region',
-                open: state.open.region,
-                parentSel: state.region, childSel: state.country,
-                label: L, childLabel: v => esc(L(v)),
-            })
-            + `</div>`;
+    if ((levels.region?.[0] || []).length) {
+        html += `<div class="facet-group"><h3>${esc(DIMS.region.title)}</h3>`
+            + renderDrill('region', levels.region, L) + `</div>`;
     }
     for (const f of FACETS) {
-        if (f.dimension) continue;
         const list = groups.get(f.key) || [];
         if (!list.length) continue;
         html += `<div class="facet-group"><h3>${esc(f.title)}</h3>`;
@@ -812,93 +823,84 @@ async function renderFacets(res) {
 }
 
 /**
- * A hierarchy, drawn as a tree.
+ * A hierarchical dimension, drawn as a tree of arbitrary depth.
  *
- * Both levels are on screen at once: every parent, with the chosen one ticked, and that
- * parent's children nested beneath it with the chosen child ticked. Choosing a value must
- * never remove it from the list you chose it from, and must never hide its siblings — the
- * two levels come from separate requests precisely so that both survive selection.
+ * Level L's list is rendered; beneath the value that the open path chose at that level,
+ * level L+1 is rendered inside it. So a three-level dimension nests three deep, from the
+ * same code and the same three requests.
  *
- * Unticking a parent clears the child with it; there is no separate "back" affordance,
- * because the tick is the state and the tick is how you undo it.
+ * Two controls per row, doing different things:
+ *   twisty   — expand: ask for this value's children. Changes nothing about the results.
+ *   checkbox — filter: narrow the results to this value (and expand, since that is
+ *              invariably the next thing wanted).
  */
-function renderTree(parents, kids, o) {
-    if (!parents.length) return '';
-    return `<ul>` + parents.map(x => {
-        const on = o.parentSel === x.value;
-        const open = o.open.has(x.value);
-        const mine = kids.get(x.value) || [];
-        const child = open && mine.length
-            ? `<ul class="hier-children">` + mine.map(k => {
-                const kon = o.childSel === k.value;
-                return `<li><label class="opt"><input type="checkbox" data-kind="${o.childKind}"
-                  data-value="${esc(k.value)}" ${kon ? 'checked' : ''}>
-                  <span class="name">${o.childLabel(k.value)}</span>
-                  <span class="count">${k.count}</span></label></li>`;
-            }).join('') + `</ul>`
-            : '';
-        // The twisty and the checkbox are deliberately separate controls: opening a node
-        // asks luc:facet for its children and changes nothing about the result set, while
-        // ticking it adds a filter. Neither implies the other, though ticking also opens,
-        // since wanting a value's children is the usual next thing.
+function renderDrill(id, levels, L, level = 0) {
+    const dim = DIMS[id];
+    const list = levels[level] || [];
+    if (!list.length) return '';
+    const { path, depth } = state.drill[id];
+    const text = v => dim.label === 'iri' ? esc(L(v))
+        : dim.fields[level] === F('stars') ? `<span class="stars">${'★'.repeat(Number(v) || 0)}</span>`
+        : esc(v);
+
+    return `<ul${level ? ' class="hier-children"' : ''}>` + list.map(x => {
+        const open = path[level] === x.value;
+        const filtered = open && depth > level;
+        const deeper = open ? renderDrill(id, levels, L, level + 1) : '';
+        const canOpen = level + 1 < dim.fields.length;
         return `<li><div class="hier-row">
-              <button class="twisty" data-kind="${o.openKind}" data-value="${esc(x.value)}"
-                      aria-expanded="${open}" title="${open ? 'collapse' : 'show what is inside'}">${open ? '▾' : '▸'}</button>
-              <label class="opt"><input type="checkbox" data-kind="${o.parentKind}"
-                data-value="${esc(x.value)}" ${on ? 'checked' : ''}>
-                <span class="name">${esc(o.label(x.value))}</span>
+              ${canOpen
+                ? `<button class="twisty" data-kind="open" data-dim="${id}" data-level="${level}"
+                           data-value="${esc(x.value)}" aria-expanded="${open}"
+                           title="${open ? 'collapse' : 'show what is inside'}">${open ? '▾' : '▸'}</button>`
+                : `<span class="twisty"></span>`}
+              <label class="opt"><input type="checkbox" data-kind="pick" data-dim="${id}"
+                data-level="${level}" data-value="${esc(x.value)}" ${filtered ? 'checked' : ''}>
+                <span class="name">${text(x.value)}</span>
                 <span class="count">${x.count}</span></label>
-            </div>${child}</li>`;
+            </div>${deeper}</li>`;
     }).join('') + `</ul>`;
 }
 
 function renderOptions(field, list, L, kind) {
     if (!list.length) return '';
     return `<ul>` + list.map(x => {
-        const on = kind === 'reviewer' ? state.reviewer === x.value : state.sel[field]?.has(x.value);
+        const on = state.sel[field]?.has(x.value);
         return `<li><label class="opt"><input type="checkbox" data-kind="${kind}" data-field="${esc(field)}"
       data-value="${esc(x.value)}" ${on ? 'checked' : ''}>
       <span class="name">${esc(L(x.value))}</span><span class="count">${x.count}</span></label></li>`;
     }).join('') + `</ul>`;
 }
 
-const toggle = (set, v) => { set.has(v) ? set.delete(v) : set.add(v); };
-
 function wireFacetInputs() {
     document.querySelectorAll('#facets [data-kind], #facet-reviewer [data-kind]').forEach(node => {
         node.onclick = ev => {
             const d = ev.currentTarget.dataset;
             state.page = 0;
+            const drill = d.dim && state.drill[d.dim];
+            const level = Number(d.level);
             switch (d.kind) {
+                case 'open': {
+                    // Expanding replaces the path from this level down, and never deepens
+                    // the filter: depth is clamped to what is still on the path.
+                    const closing = drill.path[level] === d.value;
+                    drill.path = closing ? drill.path.slice(0, level) : [...drill.path.slice(0, level), d.value];
+                    drill.depth = Math.min(drill.depth, drill.path.length);
+                    break;
+                }
+                case 'pick': {
+                    const already = drill.path[level] === d.value && drill.depth > level;
+                    drill.path = [...drill.path.slice(0, level), d.value];
+                    // Unticking drops the filter but leaves the value open, so the list you
+                    // were looking at stays on screen.
+                    drill.depth = already ? level : level + 1;
+                    break;
+                }
                 case 'multi': {
                     const set = state.sel[d.field] || (state.sel[d.field] = new Set());
                     set.has(d.value) ? set.delete(d.value) : set.add(d.value);
                     break;
                 }
-                case 'open-region':
-                    toggle(state.open.region, d.value);
-                    break;
-                case 'open-reviewer':
-                    toggle(state.open.reviewer, d.value);
-                    break;
-                case 'reviewer':
-                    state.reviewer = state.reviewer === d.value ? null : d.value;
-                    state.starsExact = null;
-                    if (state.reviewer) state.open.reviewer.add(d.value);
-                    break;
-                case 'stars-exact': {
-                    const n = Number(d.value);
-                    state.starsExact = state.starsExact === n ? null : n;
-                    break;
-                }
-                case 'region':
-                    state.region = state.region === d.value ? null : d.value;
-                    state.country = null;
-                    if (state.region) state.open.region.add(d.value);
-                    break;
-                case 'country':
-                    state.country = state.country === d.value ? null : d.value;
-                    break;
                 case 'prep': {
                     const lo = d.low === '' ? null : Number(d.low);
                     const hi = d.high === '' ? null : Number(d.high);
@@ -924,8 +926,17 @@ async function renderChips() {
     for (const [field, values] of Object.entries(state.sel)) {
         for (const v of values) add(field, v, null, () => state.sel[field].delete(v));
     }
-    if (state.region) add(F('region'), state.region, null, () => { state.region = null; state.country = null; });
-    if (state.country) add(F('country'), state.country, null, () => { state.country = null; });
+    // One chip per filtered level of each dimension. Clearing a level clears the ones
+    // below it too — a drill path with a hole in it is not a path.
+    for (const [id, dim] of Object.entries(DIMS)) {
+        const { path, depth } = state.drill[id];
+        for (let i = 0; i < depth; i++) {
+            const raw = path[i];
+            const shown = dim.fields[i] === F('stars') ? '★'.repeat(Number(raw) || 0) : null;
+            add(dim.fields[i], isIri(raw) ? raw : null, shown ?? (isIri(raw) ? null : raw),
+                () => { state.drill[id].depth = i; state.drill[id].path = path.slice(0, i + 1); });
+        }
+    }
     if (state.kind) add(F('entityType'), state.kind, null, () => { state.kind = null; });
     if (state.yearIdx) {
         const [lo, hi] = state.yearIdx;
@@ -933,9 +944,7 @@ async function renderChips() {
             lo === hi ? `${dateAxis.years[lo]}` : `${dateAxis.years[lo]}–${dateAxis.years[hi]}`,
             () => { state.yearIdx = null; });
     }
-    if (state.reviewer) add(F('reviewer'), null, state.reviewer, () => { state.reviewer = null; state.starsExact = null; });
-    if (state.starsExact !== null) add(F('stars'), null, '★'.repeat(state.starsExact), () => { state.starsExact = null; });
-    else if (state.minStars) add(F('stars'), null, `${state.minStars} or more`, () => { state.minStars = ''; el('min-stars').value = ''; });
+    if (state.minStars) add(F('stars'), null, `${state.minStars} or more`, () => { state.minStars = ''; el('min-stars').value = ''; });
     if (state.prepBucket) {
         const [lo, hi] = state.prepBucket;
         add(F('prepMinutes'), null, lo === null ? `under ${hi} min` : hi === null ? `${lo} min and over` : `${lo}–${hi} min`,
@@ -1042,10 +1051,10 @@ async function loadConfig() {
 
         const hiers = ds.profiles?.[0]?.hierarchies || [];
         const byLevel = name => hiers.find(h => (h.levels || []).includes(name))?.dimension;
-        const dim = byLevel('region');
-        if (dim) FACETS[0].key = dim;
-        const rdim = byLevel('reviewer');
-        if (rdim) REVIEW_DIM.key = rdim;
+        const regionDim = byLevel('region');
+        if (regionDim) DIMS.region.key = regionDim;
+        const reviewDim = byLevel('reviewer');
+        if (reviewDim) DIMS.review.key = reviewDim;
         badge.textContent = `index ${status} · ${nFields} fields`;
         badge.className = 'status ' + (status === 'MATCH' ? 'ok' : status === 'MISMATCH' ? 'bad' : 'warn');
         badge.title = `GET /$/config/effective\nfingerprint ${status}\nbuilt ${ds.index?.builtAt || '?'}\nhierarchy: ${dim || 'none'}`;
@@ -1075,12 +1084,9 @@ function wireChrome() {
     el('min-stars').onchange = ev => { state.minStars = ev.target.value; state.page = 0; run(); };
     el('reset').onclick = () => {
         Object.assign(state, {
-            q: '', mode: 'bm25', sort: '', page: 0, sel: {}, region: null, country: null,
-            // null = both kinds. Only two shapes exist, so "both" is genuinely the absence of a
-    // filter rather than an "in" of every class.
-    kind: null,
-    yearIdx: null, minStars: '', reviewer: null, starsExact: null, prepBucket: null,
-            open: { region: new Set(), reviewer: new Set() },
+            q: '', mode: 'bm25', sort: '', page: 0,
+            sel: {}, kind: null, yearIdx: null, minStars: '', prepBucket: null,
+            drill: { region: { path: [], depth: 0 }, review: { path: [], depth: 0 } },
         });
         el('q').value = ''; el('mode').value = 'bm25'; el('sort').value = '';
         el('min-stars').value = '';
