@@ -1,0 +1,22 @@
+# Licensed under the terms of http://www.apache.org/licenses/LICENSE-2.0
+# FEATURE 7 — external CSV children, projected back out. Every value here came from
+# data/reviews.csv and exists NOWHERE in the RDF graph: the browser never reads the file,
+# and there is no DuckDB in the picture. The indexer read it at build time and wrote each
+# row as a child document inside the recipe's Lucene block.
+#
+# ?record is the grouping key — one per matching child — so the reviewer, the stars and
+# the month stay together instead of arriving as an unattributable flat stream.
+
+PREFIX luc:  <urn:jena:lucene:index#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?label ?record ?field ?value
+WHERE {
+    (?hit ?entity) luc:query (
+        "default" "default" ""
+        '{"op":">=","args":[{"property":"urn:jena:lucene:field#stars"},5]}'
+        "" 20 0) .
+    (?hit ?record ?field ?value) luc:nestedMatch () .
+    ?entity rdfs:label ?label .
+}
+ORDER BY ?label ?record ?field

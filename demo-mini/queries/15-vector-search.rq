@@ -1,0 +1,21 @@
+# Licensed under the terms of http://www.apache.org/licenses/LICENSE-2.0
+# FEATURE 8 — semantic search. Naming a vector field in the fieldSpec is the ONLY change:
+# the query string stops being a Lucene expression and becomes text to embed. Arity,
+# filters, sorting, paging and facets are all unchanged.
+#
+# NOTE: with the default "hashing" provider this ranks by word overlap, not meaning, so
+# this query returns little. That is the provider, not the query. See README.md.
+
+PREFIX luc:  <urn:jena:lucene:index#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?entity ?label ?score
+WHERE {
+    (?hit ?entity ?score) luc:query (
+        "default"
+        '["urn:jena:lucene:field#embedding"]'
+        "something warm and comforting to eat on a freezing evening"
+        "" "" 5 0) .
+    ?entity rdfs:label ?label .
+}
+ORDER BY DESC(?score)

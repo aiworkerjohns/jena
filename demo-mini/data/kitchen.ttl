@@ -1,0 +1,168 @@
+## Licensed under the terms of http://www.apache.org/licenses/LICENSE-2.0
+##
+## Ten made-up recipes. Small enough to hold in your head, so that when a facet count or a
+## search result looks wrong you can check it by eye.
+##
+## Summaries are written to avoid the words a searcher would type. "Slow-Braised Beef Shin"
+## says nothing about being warm, comforting or wintry — so a keyword search for
+## "comforting winter food" finds nothing, and only a real embedding model finds the stew.
+## That contrast is the point of the semantic-search panel.
+
+PREFIX kt:      <http://example.org/kitchen/>
+PREFIX rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs:    <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+PREFIX xsd:     <http://www.w3.org/2001/XMLSchema#>
+
+## --- Vocabulary: regions ---
+
+kt:region-europe    rdfs:label "Europe" .
+kt:region-asia      rdfs:label "Asia" .
+kt:region-americas  rdfs:label "The Americas" .
+
+## --- Vocabulary: countries, each in exactly one region ---
+## kt:inRegion is the second step of the sequence path that feeds field:region.
+
+kt:country-france    rdfs:label "France"    ; kt:inRegion kt:region-europe .
+kt:country-italy     rdfs:label "Italy"     ; kt:inRegion kt:region-europe .
+kt:country-japan     rdfs:label "Japan"     ; kt:inRegion kt:region-asia .
+kt:country-thailand  rdfs:label "Thailand"  ; kt:inRegion kt:region-asia .
+kt:country-india     rdfs:label "India"     ; kt:inRegion kt:region-asia .
+kt:country-peru      rdfs:label "Peru"      ; kt:inRegion kt:region-americas .
+kt:country-mexico    rdfs:label "Mexico"    ; kt:inRegion kt:region-americas .
+
+## --- Vocabulary: courses and diets ---
+
+kt:course-starter  rdfs:label "Starter" .
+kt:course-main     rdfs:label "Main" .
+kt:course-dessert  rdfs:label "Dessert" .
+
+kt:diet-vegetarian  rdfs:label "Vegetarian" .
+kt:diet-vegan       rdfs:label "Vegan" .
+kt:diet-glutenFree  rdfs:label "Gluten free" .
+
+## --- People ---
+## Reached by TWO different predicates (kt:author, kt:testedBy) that feed ONE index field.
+
+kt:person-ada    rdfs:label "Ada Fournier" .
+kt:person-bruno  rdfs:label "Bruno Vega" .
+kt:person-chika  rdfs:label "Chika Mori" .
+kt:person-dara   rdfs:label "Dara Singh" .
+
+## --- The ten recipes ---
+
+kt:recipe-r01 a kt:Recipe ;
+    rdfs:label "Slow-Braised Beef Shin" ;
+    dcterms:description "Beef shin braised four hours in red wine with root vegetables until it falls from the bone." ;
+    kt:code "RCP-2019-0042" ;
+    kt:country kt:country-france ;
+    kt:course kt:course-main ;
+    kt:prepMinutes 240 ;
+    kt:publishedOn "2019-03-14"^^xsd:date ;
+    kt:author kt:person-ada ;
+    kt:testedBy kt:person-bruno .
+
+kt:recipe-r02 a kt:Recipe ;
+    rdfs:label "Tonkotsu Ramen" ;
+    dcterms:description "Pork bone broth simmered twelve hours, ladled over noodles with a soft egg." ;
+    kt:code "RCP-2019-0117" ;
+    kt:country kt:country-japan ;
+    kt:course kt:course-main ;
+    kt:prepMinutes 720 ;
+    kt:publishedOn "2019-11-02"^^xsd:date ;
+    kt:author kt:person-chika ;
+    kt:testedBy kt:person-ada .
+
+kt:recipe-r03 a kt:Recipe ;
+    rdfs:label "Green Papaya Salad" ;
+    dcterms:description "Shredded unripe papaya pounded with lime, chilli and peanuts. Sharp, crunchy and raw." ;
+    kt:code "RCP-2020-0088" ;
+    kt:country kt:country-thailand ;
+    kt:course kt:course-starter ;
+    kt:diet kt:diet-vegetarian , kt:diet-glutenFree ;
+    kt:prepMinutes 15 ;
+    kt:publishedOn "2020-01-20"^^xsd:date ;
+    kt:author kt:person-dara ;
+    kt:testedBy kt:person-chika .
+
+kt:recipe-r04 a kt:Recipe ;
+    rdfs:label "Chicken Tikka Masala" ;
+    dcterms:description "Yoghurt-marinated chicken grilled hard, then finished in a spiced tomato and cream sauce." ;
+    kt:code "RCP-2020-0203" ;
+    kt:country kt:country-india ;
+    kt:course kt:course-main ;
+    kt:prepMinutes 60 ;
+    kt:publishedOn "2020-08-05"^^xsd:date ;
+    kt:author kt:person-dara ;
+    kt:testedBy kt:person-bruno .
+
+kt:recipe-r05 a kt:Recipe ;
+    rdfs:label "Cacio e Pepe" ;
+    dcterms:description "Spaghetti tossed with pecorino and cracked black pepper. Four ingredients, no sauce to speak of." ;
+    kt:code "RCP-2021-0011" ;
+    kt:country kt:country-italy ;
+    kt:course kt:course-main ;
+    kt:diet kt:diet-vegetarian ;
+    kt:prepMinutes 20 ;
+    kt:publishedOn "2021-02-11"^^xsd:date ;
+    kt:author kt:person-bruno ;
+    kt:testedBy kt:person-ada .
+
+kt:recipe-r06 a kt:Recipe ;
+    rdfs:label "Tiramisu" ;
+    dcterms:description "Savoiardi soaked in espresso, layered with mascarpone and dusted with cocoa." ;
+    kt:code "RCP-2021-0154" ;
+    kt:country kt:country-italy ;
+    kt:course kt:course-dessert ;
+    kt:diet kt:diet-vegetarian ;
+    kt:prepMinutes 30 ;
+    kt:publishedOn "2021-09-30"^^xsd:date ;
+    kt:author kt:person-bruno ;
+    kt:testedBy kt:person-chika .
+
+kt:recipe-r07 a kt:Recipe ;
+    rdfs:label "Ceviche" ;
+    dcterms:description "Raw white fish cured in lime juice with red onion, coriander and a little chilli." ;
+    kt:code "RCP-2022-0006" ;
+    kt:country kt:country-peru ;
+    kt:course kt:course-starter ;
+    kt:diet kt:diet-glutenFree ;
+    kt:prepMinutes 25 ;
+    kt:publishedOn "2022-01-08"^^xsd:date ;
+    kt:author kt:person-ada ;
+    kt:testedBy kt:person-dara .
+
+kt:recipe-r08 a kt:Recipe ;
+    rdfs:label "Mole Poblano" ;
+    dcterms:description "Chillies, nuts and a little chocolate ground into a dark sauce and simmered slowly over turkey." ;
+    kt:code "RCP-2022-0271" ;
+    kt:country kt:country-mexico ;
+    kt:course kt:course-main ;
+    kt:prepMinutes 300 ;
+    kt:publishedOn "2022-10-19"^^xsd:date ;
+    kt:author kt:person-chika ;
+    kt:testedBy kt:person-dara .
+
+kt:recipe-r09 a kt:Recipe ;
+    rdfs:label "Tarte Tatin" ;
+    dcterms:description "Apples caramelised in butter and sugar under a pastry lid, then turned out upside down." ;
+    kt:code "RCP-2023-0044" ;
+    kt:country kt:country-france ;
+    kt:course kt:course-dessert ;
+    kt:diet kt:diet-vegetarian ;
+    kt:prepMinutes 90 ;
+    kt:publishedOn "2023-04-02"^^xsd:date ;
+    kt:author kt:person-ada ;
+    kt:testedBy kt:person-bruno .
+
+kt:recipe-r10 a kt:Recipe ;
+    rdfs:label "Miso Soup" ;
+    dcterms:description "Dashi whisked with fermented soybean paste, dropped with tofu cubes and sliced spring onion." ;
+    kt:code "RCP-2024-0130" ;
+    kt:country kt:country-japan ;
+    kt:course kt:course-starter ;
+    kt:diet kt:diet-vegetarian , kt:diet-vegan , kt:diet-glutenFree ;
+    kt:prepMinutes 10 ;
+    kt:publishedOn "2024-06-15"^^xsd:date ;
+    kt:author kt:person-chika ;
+    kt:testedBy kt:person-ada .

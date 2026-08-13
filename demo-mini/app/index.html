@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<!-- Licensed under the terms of http://www.apache.org/licenses/LICENSE-2.0 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>demo-mini — SHACL faceted search</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header>
+  <h1>demo-mini <span class="sub">ten recipes, every feature once</span></h1>
+  <div id="index-status" class="status" title="from GET /$/config/effective">checking index…</div>
+</header>
+
+<div class="layout">
+
+  <!-- ── Left-hand column: facets, and the raw feature tests ── -->
+  <aside>
+    <nav class="tabs">
+      <button class="tab active" data-tab="facets">Facets</button>
+      <button class="tab" data-tab="tests">Feature tests</button>
+    </nav>
+
+    <section id="panel-facets" class="panel">
+      <div class="facet-group">
+        <h3>Published</h3>
+        <div class="daterow">
+          <label>from <input type="date" id="date-from" min="2019-01-01" max="2026-12-31"></label>
+          <label>to <input type="date" id="date-to" min="2019-01-01" max="2026-12-31"></label>
+        </div>
+        <button class="linkish" id="date-clear">clear dates</button>
+      </div>
+
+      <div class="facet-group">
+        <h3>Reviews <span class="tag csv">from CSV</span></h3>
+        <p class="hint">Both clauses must be satisfied by <em>one</em> review row.</p>
+        <label class="inline">min stars
+          <select id="min-stars">
+            <option value="">any</option>
+            <option value="5">5</option><option value="4">4+</option>
+            <option value="3">3+</option><option value="2">2+</option>
+          </select>
+        </label>
+        <div id="facet-reviewer"></div>
+      </div>
+
+      <div id="facets"></div>
+    </section>
+
+    <section id="panel-tests" class="panel hidden">
+      <p class="hint">Each runs the exact <code>.rq</code> file from <code>queries/</code>.</p>
+      <ul id="test-list"></ul>
+    </section>
+  </aside>
+
+  <!-- ── Main column ── -->
+  <main>
+    <div class="searchbar">
+      <select id="mode" title="what the search box does">
+        <option value="bm25">Keyword (BM25)</option>
+        <option value="semantic">Semantic (vector)</option>
+        <option value="code">Code typeahead (edge n-gram)</option>
+      </select>
+      <input type="search" id="q" placeholder="try: chilli" autocomplete="off">
+      <select id="sort">
+        <option value="">Sort: relevance</option>
+        <option value="prepMinutes:asc">Quickest first</option>
+        <option value="prepMinutes:desc">Slowest first</option>
+        <option value="publishedOn:desc">Newest first</option>
+        <option value="publishedOn:asc">Oldest first</option>
+      </select>
+      <button id="reset">Reset</button>
+    </div>
+
+    <div id="mode-note" class="note hidden"></div>
+    <div id="chips" class="chips"></div>
+    <div id="summary" class="summary"></div>
+    <div id="results"></div>
+    <div id="pager" class="pager"></div>
+
+    <details id="debug">
+      <summary>SPARQL for this view</summary>
+      <pre id="debug-sparql"></pre>
+    </details>
+  </main>
+</div>
+
+<script src="labels.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

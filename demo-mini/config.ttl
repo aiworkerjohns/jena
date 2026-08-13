@@ -1,0 +1,260 @@
+## Licensed under the terms of http://www.apache.org/licenses/LICENSE-2.0
+##
+## demo-mini — one shape, ten recipes, every SHACL-mode feature exactly once.
+##
+## Read this file top to bottom: server, index, fields, shape. Each field carries a
+## comment saying which demo feature it exists for.
+
+PREFIX :        <#>
+PREFIX field:   <urn:jena:lucene:field#>
+PREFIX idx:     <urn:jena:lucene:index#>
+PREFIX fuseki:  <http://jena.apache.org/fuseki#>
+PREFIX ja:      <http://jena.hpl.hp.com/2005/11/Assembler#>
+PREFIX rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs:    <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+PREFIX sh:      <http://www.w3.org/ns/shacl#>
+PREFIX tdb2:    <http://jena.apache.org/2016/tdb#>
+PREFIX text:    <http://jena.apache.org/text#>
+PREFIX kt:      <http://example.org/kitchen/>
+
+## --- Server ---
+
+[] rdf:type fuseki:Server ;
+   fuseki:services ( :service ) .
+
+:service rdf:type fuseki:Service ;
+    fuseki:name "kitchen" ;
+    fuseki:endpoint [ fuseki:operation fuseki:query ; fuseki:name "query" ] ;
+    fuseki:endpoint [ fuseki:operation fuseki:gsp-rw ; fuseki:name "data" ] ;
+    fuseki:dataset :dataset .
+
+## --- Dataset ---
+
+:dataset rdf:type text:TextDataset ;
+    text:dataset :base ;
+    text:indexes :index .
+
+:base rdf:type tdb2:DatasetTDB ;
+    tdb2:location "DB" .
+
+:index rdf:type text:TextIndexShacl ;
+    text:indexId "default" ;
+    text:directory <file:Lucene> ;
+    ## On disk, not in memory. The index is built by a separate `task index` process, and
+    ## an in-memory taxonomy would die with it — silently emptying every hierarchical
+    ## facet at serve time.
+    text:taxonomyDirectory <file:Taxonomy> ;
+    text:shapes ( :RecipeShape ) ;
+    text:storeValues false ;
+    text:maxFacetHits 50000 ;
+
+    ## FEATURE 8 — the embedding engine behind field:embedding.
+    ##
+    ## "hashing" ships in jena-text, needs no download, and works offline. It hashes words
+    ## into vector components, so it measures LEXICAL OVERLAP, NOT MEANING. It demonstrates
+    ## the vector *plumbing* — filtered KNN, top-k facets — not semantic retrieval.
+    ##
+    ## The "jlama" provider is the real-embeddings path and is currently BROKEN: its
+    ## vectors have cosine ~0 against a reference forward pass of the same model. See
+    ## README.md → "Vector search: what actually works". Do not switch to it expecting
+    ## sensible results.
+    idx:embedding [
+        idx:provider "hashing" ;
+        idx:dimension 64 ;
+    ] .
+
+## ==========================================================================
+## Fields — defined once, path-free. The path lives on the occurrence below.
+## ==========================================================================
+
+## FEATURE 3a — TEXT / BM25. No idx:analyzer, so the index-wide StandardAnalyzer applies
+## and BM25 ranks the hits. This is what the main search box searches.
+field:title
+    idx:fieldName "title" ;
+    idx:fieldType idx:TextField ;
+    idx:stored true ;
+    idx:defaultSearch true .
+
+field:summary
+    idx:fieldName "summary" ;
+    idx:fieldType idx:TextField ;
+    idx:stored true ;
+    idx:defaultSearch true .
+
+## FEATURE 3b — KEYWORD holding an IRI. Exact-term equality, facet counts, and the
+## values are IRIs the browser resolves to labels through the label cache.
+field:course
+    idx:fieldName "course" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;
+    idx:facetable true .
+
+field:country
+    idx:fieldName "country" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;
+    idx:facetable true .
+
+## FEATURE 4 — hierarchical faceting. region is reached by a SEQUENCE path
+## ( kt:country kt:inRegion ), so the level above comes from the vocabulary, not from
+## the recipe. See idx:facetHierarchy on the shape.
+field:region
+    idx:fieldName "region" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;
+    idx:facetable true .
+
+field:diet
+    idx:fieldName "diet" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;
+    idx:facetable true ;
+    idx:multiValued true .
+
+## FEATURE 5 — one field, several SHACL paths. Two occurrences on the shape feed this
+## single field from kt:author AND kt:testedBy, so "people involved in this recipe" is one
+## facet rather than two. Multi-valued because a recipe has both.
+field:contributor
+    idx:fieldName "contributor" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;
+    idx:facetable true ;
+    idx:multiValued true .
+
+## FEATURE 3c — edge n-grams for typeahead over an identifier. tokenized true means any
+## SEGMENT can be prefix-matched: "0042" reaches RCP-2019-0042, not just "RCP-2019".
+## Do NOT set idx:queryAnalyzer here — the mode picks its own partner (StandardAnalyzer).
+field:codeText
+    idx:fieldName "codeText" ;
+    idx:fieldType idx:TextField ;
+    idx:analyzer [ a text:EdgeNGramAnalyzer ; text:tokenized true ] .
+
+## The exact twin of the same code: equality filters and a value to display.
+field:code
+    idx:fieldName "code" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;
+    idx:facetable true .
+
+## FEATURE 3d — INT. Filterable (idx:indexed), range-facetable, and sortable.
+field:prepMinutes
+    idx:fieldName "prepMinutes" ;
+    idx:fieldType idx:IntField ;
+    idx:stored true ;
+    idx:indexed true ;
+    idx:facetable true ;
+    idx:sortable true .
+
+## FEATURE 2 — date range slicing. idx:storeLiteralMetadata is NOT optional on a
+## TEMPORAL field: without it a projected value cannot rebuild as an xsd:date literal.
+field:publishedOn
+    idx:fieldName "publishedOn" ;
+    idx:fieldType idx:TemporalField ;
+    idx:stored true ;
+    idx:indexed true ;
+    idx:facetable true ;
+    idx:sortable true ;
+    idx:storeLiteralMetadata true .
+
+## FEATURE 8 — the dense vector. The one field kind that is DERIVED, not extracted: it has
+## no sh:path, and idx:embeddingSource names the fields whose values are joined (in this
+## order, separated by ". ") and embedded. It attaches with idx:vectorField, not sh:property.
+##
+## idx:dimension must match what the provider produces — 64 for "hashing".
+field:embedding
+    idx:fieldName "embedding" ;
+    idx:fieldType idx:VectorField ;
+    idx:dimension 64 ;
+    idx:similarity idx:Cosine ;
+    idx:embeddingSource ( field:title field:summary ) .
+
+## --- FEATURE 7 — fields bound to CSV columns ---
+## These carry no sh:path. A field is "external" because a column binds it, nothing else.
+## None of these values exist anywhere in the RDF graph.
+
+field:reviewer
+    idx:fieldName "reviewer" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;             # projected by luc:nestedMatch
+    idx:indexed true ;
+    idx:facetable true .
+
+field:stars
+    idx:fieldName "stars" ;
+    idx:fieldType idx:IntField ;
+    idx:stored true ;             # projected by luc:nestedMatch
+    idx:indexed true ;
+    idx:facetable true ;
+    idx:sortable true .
+
+## TEMPORAL is refused on a CSV column — a bare cell carries no datatype — so the review
+## month is a KEYWORD of the form "2025-04" and sorts lexically, which for ISO is correct.
+field:reviewMonth
+    idx:fieldName "reviewMonth" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;
+    idx:indexed true ;
+    idx:facetable true .
+
+## ==========================================================================
+## The one shape
+## ==========================================================================
+
+:RecipeShape
+    sh:targetClass kt:Recipe ;
+
+    sh:property [ idx:field field:title      ; sh:path rdfs:label ] ;
+    sh:property [ idx:field field:summary    ; sh:path dcterms:description ] ;
+    sh:property [ idx:field field:course     ; sh:path kt:course ] ;
+    sh:property [ idx:field field:country    ; sh:path kt:country ] ;
+    sh:property [ idx:field field:diet       ; sh:path kt:diet ] ;
+    sh:property [ idx:field field:prepMinutes ; sh:path kt:prepMinutes ] ;
+    sh:property [ idx:field field:publishedOn ; sh:path kt:publishedOn ] ;
+
+    ## Sequence path: recipe -> country -> region. The recipe has no region of its own.
+    sh:property [ idx:field field:region     ; sh:path ( kt:country kt:inRegion ) ] ;
+
+    ## FEATURE 5 — the fan-in. Two occurrences, two different paths, ONE canonical field.
+    sh:property [ idx:field field:contributor ; sh:path kt:author ] ;
+    sh:property [ idx:field field:contributor ; sh:path kt:testedBy ] ;
+
+    ## The exact/typeahead twins share a path and diverge on analysis.
+    sh:property [ idx:field field:code       ; sh:path kt:code ] ;
+    sh:property [ idx:field field:codeText   ; sh:path kt:code ] ;
+
+    ## FEATURE 4 — two levels, read independently from the entity and cross-produced.
+    ## Correct here because each recipe has exactly one country and therefore exactly one
+    ## region: there is no cartesian product to get wrong.
+    idx:facetHierarchy ( field:region field:country ) ;
+
+    ## FEATURE 8 — no sh:path, so it attaches here.
+    idx:vectorField field:embedding ;
+
+    ## FEATURE 7 — children from a CSV that is never loaded into the graph, joined on the
+    ## recipe IRI. All three bound columns land on the SAME child, so they correlate:
+    ## "5 stars FROM Priya" must be satisfied by one review, not by two different ones.
+    idx:nested [
+        ## Required for an external block: with no idx:joinPath there is nothing to derive
+        ## the scope name from.
+        idx:nestedName "review" ;
+        idx:externalSource [
+            idx:format        idx:CsvFile ;
+            idx:location      "data/reviews.csv" ;
+            idx:subjectColumn "recipe" ;
+            idx:column [ idx:columnName "reviewer" ; idx:field field:reviewer ] ;
+            idx:column [ idx:columnName "stars"    ; idx:field field:stars ] ;
+            idx:column [ idx:columnName "month"    ; idx:field field:reviewMonth ] ;
+        ] ;
+
+        ## FEATURE 4 (again) — a hierarchy INSIDE a nested block. Its levels are correlated
+        ## per child record, so drilling "Priya" then a rating counts only reviews where
+        ## Priya gave that rating — never a cartesian product of Priya's reviews with
+        ## someone else's ratings.
+        ##
+        ## This block also exists for a mundane reason worth knowing: a child-scoped field
+        ## is NOT available as an entity-level flat facet, so `luc:facet` on field:reviewer
+        ## alone returns nothing at all. The hierarchy dimension is how these values get
+        ## counted.
+        idx:facetHierarchy ( field:reviewer field:stars ) ;
+    ] .
