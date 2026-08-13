@@ -207,7 +207,52 @@ One block per index names the provider:
 | Provider | Ships in | Notes |
 |---|---|---|
 | `hashing` | `jena-text` | Deterministic, no model, no download. Measures **lexical overlap, not meaning** — for testing the plumbing and for offline demos only |
-| `jlama` | `jena-text-embeddings` (optional) | Real embeddings. Requires `--add-modules jdk.incubator.vector` |
+| `onnx` | `jena-text-embeddings` (optional) | Real embeddings, via ONNX Runtime. **Use this one.** Any model with an ONNX export |
+| `jlama` | `jena-text-embeddings` (optional) | **Broken — do not use.** See below |
+
+#### `jlama` returns vectors that are not the model's output
+
+It loads `BAAI/bge-small-en-v1.5` without error and reports the right dimension, but the
+vectors are wrong. Against a reference BERT forward pass over the same `model.safetensors`
+and the same token ids from Jlama's own (correct) tokenizer, its vector for a given text has
+cosine **-0.06** with the correct one under its default `MODEL` pooling — 0.27 at best
+across its four pooling modes. Unrelated documents come out closer than related ones, so
+retrieval is noise.
+
+This is not a configuration problem: the tokenizer is right, the `F32`/`I8` and `F32`/`F32`
+working dtypes are bit-identical, every pooling mode is wrong, and the same weights behave
+correctly under both the numpy reference and ONNX Runtime. Nothing throws — it is exactly
+the silent "confident garbage" failure described under
+[Model identity is a correctness boundary](#model-identity-is-a-correctness-boundary),
+arriving through the engine rather than through a model mismatch.
+
+`TestOnnxEmbeddingProvider.embeddingsMatchTheReferenceForwardPass` pins the correct numbers.
+
+#### The `onnx` provider
+
+```turtle
+idx:embedding [
+    idx:provider "onnx" ;
+    idx:model "BAAI/bge-small-en-v1.5" ;
+    idx:modelPath "models" ;                      # downloaded here on first run, then reused
+    idx:option [ idx:optionName "pooling" ; idx:optionValue "cls" ] ;    # optional
+] .
+```
+
+ONNX Runtime runs the forward pass; tokenisation reuses Jlama's `BertTokenizer`, which is
+pure Java and was verified correct, so no second native dependency is needed. The runtime's
+native libraries ship inside its jar for linux/macOS/windows on x86_64 and aarch64, and
+**no `--add-modules jdk.incubator.vector` is required** — that was a Jlama constraint.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `pooling` | `cls` for `bge-*`, else `mean` | How token vectors collapse to one. Wrong value degrades retrieval silently |
+| `queryPrefix` / `documentPrefix` | inferred from the model name | The asymmetric instructions BGE and E5 expect |
+
+Model files are fetched from HuggingFace (`onnx/model.onnx` plus the tokenizer and config
+JSON) into `idx:modelPath`. A directory that already holds all four is used as-is with no
+network call, which is the intended production shape — bake the model into a derived image.
+Not every model publishes an ONNX export; a missing one fails at startup with the URL.
 
 Providers are discovered with `ServiceLoader`, so `jena-text` itself carries no ML
 dependency and adding an engine is a jar on the classpath, not a class name in RDF. An

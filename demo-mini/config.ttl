@@ -51,17 +51,27 @@ PREFIX kt:      <http://example.org/kitchen/>
 
     ## FEATURE 8 — the embedding engine behind field:embedding.
     ##
-    ## "hashing" ships in jena-text, needs no download, and works offline. It hashes words
-    ## into vector components, so it measures LEXICAL OVERLAP, NOT MEANING. It demonstrates
-    ## the vector *plumbing* — filtered KNN, top-k facets — not semantic retrieval.
+    ## "onnx" runs a real sentence-embedding model through ONNX Runtime. Its output matches
+    ## an independent reference forward pass to four decimal places. The first run downloads
+    ## ~130MB from HuggingFace into ./models; after that it is offline. It needs the
+    ## optional jena-text-embeddings module on the classpath, which is what the `index` and
+    ## `serve` tasks assemble.
     ##
-    ## The "jlama" provider is the real-embeddings path and is currently BROKEN: its
-    ## vectors have cosine ~0 against a reference forward pass of the same model. See
-    ## README.md → "Vector search: what actually works". Do not switch to it expecting
-    ## sensible results.
+    ## Do NOT use idx:provider "jlama" for this model. It loads without error and returns
+    ## vectors that are not the model's output — cosine -0.06 against the correct vector for
+    ## the same text. See README.md → "Vector search: what actually works".
+    ##
+    ## For a fully offline demo, swap in the block below. "hashing" ships in jena-text and
+    ## needs no download, but it hashes words into vector components: it measures LEXICAL
+    ## OVERLAP, NOT MEANING. It demonstrates the plumbing, not retrieval. Remember to set
+    ## idx:dimension 64 on field:embedding as well, and to reindex.
+    ##
+    ##   idx:embedding [ idx:provider "hashing" ; idx:dimension 64 ] ;
+    ##
     idx:embedding [
-        idx:provider "hashing" ;
-        idx:dimension 64 ;
+        idx:provider "onnx" ;
+        idx:model "BAAI/bge-small-en-v1.5" ;
+        idx:modelPath "models" ;
     ] .
 
 ## ==========================================================================
@@ -161,11 +171,12 @@ field:publishedOn
 ## no sh:path, and idx:embeddingSource names the fields whose values are joined (in this
 ## order, separated by ". ") and embedded. It attaches with idx:vectorField, not sh:property.
 ##
-## idx:dimension must match what the provider produces — 64 for "hashing".
+## idx:dimension must match what the provider produces — 384 for bge-small-en-v1.5,
+## 64 for "hashing". Lucene fixes it at index time, so changing it means a full reindex.
 field:embedding
     idx:fieldName "embedding" ;
     idx:fieldType idx:VectorField ;
-    idx:dimension 64 ;
+    idx:dimension 384 ;
     idx:similarity idx:Cosine ;
     idx:embeddingSource ( field:title field:summary ) .
 

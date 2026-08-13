@@ -2,3 +2,5 @@ DB/
 Lucene/
 Taxonomy/
 fuseki.log
+models/
+.embeddings-cp

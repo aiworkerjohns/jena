@@ -11,17 +11,30 @@ task build     # once — builds the Fuseki server jar
 task up        # load, index, serve, and open the app on :8070
 ```
 
-Without `go-task`, the same four steps are:
+Without `go-task`, the same steps are:
 
 ```bash
-mvn install -pl jena-fuseki2/jena-fuseki-server -am -DskipTests -Drat.skip   # from repo root
+# from the repo root — the server jar, plus the optional embeddings module and its classpath
+mvn install -pl jena-fuseki2/jena-fuseki-server -am -DskipTests -Drat.skip
+mvn -q -pl jena-text-embeddings -am -Pdev -DskipTests -Drat.skip install
+mvn -q -pl jena-text-embeddings dependency:build-classpath \
+    -Dmdep.outputFile=$(pwd)/demo-mini/.embeddings-cp
+
+cd demo-mini
 JAR=../jena-fuseki2/jena-fuseki-server/target/jena-fuseki-server-6.2.0-SNAPSHOT.jar
+CP="$JAR:$(cat .embeddings-cp):../jena-text-embeddings/target/classes"
+
 rm -rf DB Lucene Taxonomy
 java -cp $JAR tdb2.tdbloader --loc=DB data/kitchen.ttl
-java -cp $JAR org.apache.jena.query.text.cmd.shacltextindexer --desc=config.ttl
-java -jar $JAR --port 3040 --config config.ttl &
+java -cp "$CP" org.apache.jena.query.text.cmd.shacltextindexer --desc=config.ttl
+java -cp "$CP" org.apache.jena.fuseki.main.cmds.FusekiServerCmd --port 3040 --config config.ttl &
 python3 serve_app.py --port 8070 --directory app --backend http://localhost:3040
 ```
+
+`jena-text-embeddings` is deliberately **not** a dependency of the Fuseki server jar — an ML
+runtime should not ship by default with the text index — so both the indexer and the server
+assemble a classpath instead of running the shaded jar. Unlike the Jlama path, no
+`--add-modules jdk.incubator.vector` is needed: ONNX Runtime does not use the Vector API.
 
 App on <http://localhost:8070>, Fuseki on :3040. `task query` runs every file in
 `queries/` from the shell; the app's **Feature tests** tab runs the same files in the browser.
@@ -54,50 +67,78 @@ the index-shape fingerprint status and field count.
 
 ## Vector search: what actually works
 
-**The plumbing works. The only real embedding engine does not.**
+Semantic search runs on a real model, through the **`onnx`** provider added for this.
+Try these in the app's Semantic mode — none shares a word with the recipe it finds:
 
-What is verified working: naming a vector field in `fieldSpec` switches `luc:query` to
-KNN with no other change to the call; the `cqlFilter` is pushed *into* the HNSW traversal
-rather than applied to its result; facets and `?totalHits` come back top-k scoped. Query
-`16` shows a filtered similarity search returning only main courses.
-
-What is not: the `jlama` provider produces vectors that are **not the model's output**.
-
-Measured against a reference BERT forward pass written in numpy, reading the same
-`model.safetensors` and the same token ids that Jlama's own (correct) tokenizer produces:
-
-| Comparison | Reference | Jlama 0.8.4 |
+| Query | Returns | Because the recipe says |
 |---|---|---|
-| beef stew ↔ "a slow-cooked meat dish in wine" | 0.65 | 0.77 |
-| beef stew ↔ "quantum chromodynamics lattice gauge theory" | **0.29** | **0.71** |
-| tiramisu ↔ "quantum chromodynamics lattice gauge theory" | 0.44 | 0.78 |
-| **Jlama's vector vs the reference vector, same text** | 1.00 by definition | **−0.06** |
+| a coffee flavoured Italian pudding | Tiramisu | espresso, mascarpone, savoiardi |
+| a savoury broth with bean curd | Miso Soup | dashi, fermented soybean paste, tofu |
+| meat cooked very slowly in wine until tender | Slow-Braised Beef Shin | braised four hours in red wine |
+| pasta with a sharp cheese and lots of pepper | Cacio e Pepe | spaghetti, pecorino, black pepper |
+| raw seafood marinated in citrus | Ceviche | raw white fish cured in lime juice |
 
-That last row is the finding. Under the provider's default `MODEL` pooling, Jlama's
-embedding is orthogonal to the correct one — cosine −0.06 where a working implementation
-gives ~0.99. The best of its four pooling modes reaches 0.27. Every recipe ends up closer
-to a particle-physics phrase than to another recipe, so ranking is noise.
+The same strings in Keyword mode do not find those recipes at all. That contrast is the
+demo.
 
-Ruled out: it is not our configuration, and not the model files. The tokenizer emits
-correct WordPiece ids with `[CLS]`/`[SEP]`; `F32`/`F32` and `F32`/`I8` working dtypes give
-bit-identical results; all four `PoolingType` values are wrong; and the same weights driven
-by the numpy reference behave sensibly. 0.8.4 is the latest Jlama release.
+### Two honest limits
 
-Nothing errors. The model loads, reports 384 dimensions, embeds without complaint, and
-returns confident garbage — the exact failure mode `docs/03-configuration.md` warns about
-for model mismatch, arriving instead through the engine.
+**There is no relevance cutoff.** A KNN search returns the k nearest neighbours, full stop
+— so with ten recipes and `idx:knnTopK` at its default of 100, *everything* comes back on
+every query, ranked. `?totalHits` is "neighbours returned, bounded by k", not a corpus
+count. Set `idx:knnTopK` low (3, say) and reindex if you want to watch the cut-off bite;
+the top-k-scoped facet counts shrink with it.
 
-So this demo ships with the `hashing` provider, which works offline and compares **words,
-not meaning**. Semantic mode therefore demonstrates the query shape and the filtered-KNN
-behaviour, not retrieval quality. The dataset is nonetheless written for a real model —
-summaries deliberately avoid the words a searcher would type, so "something warm for a
-cold night" shares no vocabulary with the beef stew. Point a working engine at it and that
-query should return the stew and the ramen.
+**It matches topic, not inference.** These queries work because they paraphrase what the
+text says. Queries needing a leap — "something warm and comforting for a cold night", which
+requires knowing braised beef is comfort food — do *not* reliably return the stew. That is
+the model, not the plumbing: an independent numpy forward pass over the same weights ranks
+it the same way. Small sentence-embedding models are paraphrase engines.
 
-The design note already flags ONNX Runtime / LangChain4j as the fallback engine. That now
-looks necessary rather than optional. `jena-text` only knows the `EmbeddingProvider`
-interface and a `ServiceLoader` name, so a second engine is a new module and a config
-string — no change to index or query code.
+### The jlama provider is broken — do not use it
+
+It loads `BAAI/bge-small-en-v1.5` without error and returns 384-dimensional vectors that
+are **not the model's output**. Measured against a reference BERT forward pass written in
+numpy, reading the same `model.safetensors` and the same token ids from Jlama's own
+(correct) tokenizer:
+
+| Comparison | Reference | ONNX provider | Jlama 0.8.4 |
+|---|---|---|---|
+| beef stew vs "a slow-cooked meat dish in wine" | 0.6534 | 0.6534 | 0.77 |
+| beef stew vs "quantum chromodynamics lattice gauge theory" | **0.2919** | **0.2919** | **0.71** |
+| tiramisu vs "quantum chromodynamics lattice gauge theory" | 0.4367 | 0.4367 | 0.78 |
+| vector vs the reference vector, same text | 1.00 | ~1.00 | **-0.06** |
+
+The last row is the finding: under Jlama's default `MODEL` pooling the embedding is
+orthogonal to the correct one, and the best of its four pooling modes reaches 0.27. Every
+recipe ends up closer to a particle-physics phrase than to another recipe.
+
+Ruled out: not our configuration, not the model files. The tokenizer emits correct
+WordPiece ids with `[CLS]`/`[SEP]`; `F32`/`F32` and `F32`/`I8` working dtypes are
+bit-identical; all four `PoolingType` values are wrong; the same weights behave correctly
+under both the numpy reference and ONNX Runtime. 0.8.4 is the latest release. Nothing
+throws — it is the "confident garbage" failure `docs/03-configuration.md` warns about for a
+model mismatch, arriving through the engine instead.
+
+`TestOnnxEmbeddingProvider.embeddingsMatchTheReferenceForwardPass` pins the numbers above.
+
+### How the onnx provider is put together
+
+ONNX Runtime does the forward pass; **Jlama's `BertTokenizer` still does the tokenisation**,
+because it was verified correct and is pure Java, so reusing it avoids a second native
+dependency. Pooling is per-model and silently wrong if guessed — BGE pools `[CLS]`, E5 and
+the MiniLM family average — so it is inferred from the model name and overridable with the
+`pooling` option, as are the query/document prefixes BGE and E5 require.
+
+It also removes the constraint that motivated the design note's fallback: Jlama loads only
+encoder-only BERT, whereas anything with an ONNX export now works. `idx:dimension` must
+match what the model produces — 384 here — and Lucene fixes it at index time, so changing
+model means a reindex.
+
+Model files land in `./models` on first run (~130MB from HuggingFace) and are reused after
+that. For a fully offline demo, switch `config.ttl` to the `hashing` provider and set
+`idx:dimension 64` on `field:embedding`; it compares words rather than meaning, and
+demonstrates the plumbing only.
 
 ## Two behaviours worth knowing
 

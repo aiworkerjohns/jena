@@ -509,8 +509,11 @@ function renderModeNote() {
         note.innerHTML = '<strong>Semantic mode.</strong> The only change is the <code>fieldSpec</code> argument — '
             + 'naming the vector field makes the search box text to embed rather than a Lucene expression. '
             + 'Filters below are pushed <em>into</em> the KNN traversal, and facet counts become top-k scoped. '
-            + '<strong>The default <code>hashing</code> provider compares words, not meaning</strong>, so the '
-            + 'ranking here is not semantic. See README → “Vector search: what actually works”.';
+            + 'Try <em>a coffee flavoured Italian pudding</em>, <em>a savoury broth with bean curd</em>, or '
+            + '<em>meat cooked very slowly in wine until tender</em> — none share a word with the recipe they '
+            + 'find. Switch back to Keyword to see BM25 miss them. '
+            + 'Note that KNN always returns the k nearest neighbours, so with ten recipes everything comes '
+            + 'back, ranked — there is no relevance cutoff.';
         note.classList.remove('hidden');
     } else if (state.mode === 'code') {
         note.className = 'note';

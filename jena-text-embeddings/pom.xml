@@ -37,6 +37,7 @@
   <properties>
     <automatic.module.name>org.apache.jena.text.embeddings</automatic.module.name>
     <ver.jlama>0.8.4</ver.jlama>
+    <ver.onnxruntime>1.20.0</ver.onnxruntime>
     <ver.jackson>2.15.2</ver.jackson>
     <ver.jspecify>1.0.0</ver.jspecify>
   </properties>
@@ -77,11 +78,28 @@
       Jlama is pure Java (no native libraries), which keeps the UBI images clean and
       makes arm64 free. It requires the Vector API: see build-files/docker for the
       JAVA_VECTOR_OPTS the loader and runtime pass.
+
+      NOTE: its embedding forward pass is BROKEN for BERT models — see the class comment
+      on OnnxEmbeddingProvider for the measurements. It is retained for two reasons: its
+      BertTokenizer is correct and pure Java, and the ONNX provider uses it; and removing
+      a published provider name is a separate decision from adding a working one.
     -->
     <dependency>
       <groupId>com.github.tjake</groupId>
       <artifactId>jlama-core</artifactId>
       <version>${ver.jlama}</version>
+    </dependency>
+
+    <!--
+      ONNX Runtime is the working forward pass. It ships native libraries for
+      linux/macOS/windows on x86_64 and aarch64 inside this one jar, so there is nothing
+      to install, but it is the reason this module stays optional and out of the Fuseki
+      server jar.
+    -->
+    <dependency>
+      <groupId>com.microsoft.onnxruntime</groupId>
+      <artifactId>onnxruntime</artifactId>
+      <version>${ver.onnxruntime}</version>
     </dependency>
 
     <dependency>

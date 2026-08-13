@@ -19,3 +19,4 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 org.apache.jena.query.text.embedding.jlama.JlamaEmbeddingProviderFactory
+org.apache.jena.query.text.embedding.onnx.OnnxEmbeddingProviderFactory
