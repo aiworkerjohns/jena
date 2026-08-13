@@ -31,6 +31,7 @@ import org.apache.jena.geosparql.implementation.vocabulary.SRS_URI;
 import org.apache.jena.datatypes.RDFDatatype;
 import org.apache.jena.datatypes.xsd.XSDDatatype;
 import org.apache.jena.graph.Node;
+import org.apache.jena.sparql.core.DatasetGraph;
 import org.apache.jena.graph.NodeFactory;
 import org.apache.jena.query.text.assembler.IndexVocab;
 import org.apache.jena.query.text.cql.CqlExpression;
@@ -126,6 +127,12 @@ public class ShaclTextIndexLucene extends TextIndexLucene {
 
     /** The stamp found on disk when this index was opened, or null if there was none. */
     private final ShaclIndexStamp.StampData openedStamp;
+
+    /**
+     * Whether this open created the stamp because the index was empty. Such an index may
+     * still adopt the identity of the dataset it is attached to; an existing one may not.
+     */
+    private boolean stampedAsNew = false;
 
     // Taxonomy directory for hierarchical facets (null if no hierarchies configured)
     private final Directory taxoDirectory;
@@ -309,6 +316,56 @@ public class ShaclTextIndexLucene extends TextIndexLucene {
             return;
         }
         stampConfig(null);
+        stampedAsNew = true;
+    }
+
+    /**
+     * Tie this index to the dataset it is being attached to, or report that it is tied to
+     * a different one.
+     * <p>
+     * Called by the assembler, which is the first point at which the index and the dataset
+     * are both in hand — the constructor runs before they meet.
+     * <p>
+     * A freshly created index adopts the dataset's identity, minting one if the dataset
+     * has none. An index that already carries content does not: its pairing records the
+     * dataset its documents actually came from, and rewriting that would erase the only
+     * evidence of a crossed mount.
+     * <p>
+     * An identity is minted for the attached dataset only when the index carries a
+     * pairing to compare it against. Otherwise there is no verdict to reach and no reason
+     * to write into someone's database directory. The case this covers: an index built by
+     * the indexer from dataset A, mounted against a dataset B that was loaded with plain
+     * {@code tdbloader} and so has no identity of its own. Without minting here, B stays
+     * anonymous and the crossed mount is reported as unknown rather than as the error it
+     * is. A read-only mount simply yields null and falls back to unknown.
+     */
+    public void checkOrCompletePairing(DatasetGraph dsg) {
+        if ( stampedAsNew ) {
+            String datasetId = DatasetLocations.datasetInstanceId(dsg, true);
+            if ( datasetId != null ) {
+                stampConfig(datasetId);
+                log.info("New index paired with dataset {}", datasetId);
+            }
+            return;
+        }
+
+        boolean indexIsPaired = openedStamp != null && openedStamp.pairedDatasetId() != null;
+        String currentDatasetId = DatasetLocations.datasetInstanceId(dsg, indexIsPaired);
+        switch ( ShaclIndexStamp.comparePairing(openedStamp, currentDatasetId) ) {
+            case MATCH ->
+                log.info("Index is paired with the dataset it was built from ({})", currentDatasetId);
+            case MISMATCH -> {
+                log.warn("Index/dataset PAIRING MISMATCH - this index was not built from this dataset.");
+                log.warn("    index was built from dataset: {}", openedStamp.pairedDatasetId());
+                log.warn("    dataset attached here:        {}", currentDatasetId);
+                log.warn("    The configuration matches, so results will look plausible and be wrong.");
+                log.warn("    Check which index and database directories are mounted.");
+            }
+            case UNKNOWN -> {
+                // Silent. An unpaired index or an in-memory dataset is an ordinary
+                // configuration, and the config-status log above has already spoken.
+            }
+        }
     }
 
     /**

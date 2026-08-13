@@ -394,4 +394,92 @@ public class TestShaclIndexStamp {
             ShaclIndexStamp.compare(stamp, index.getConfigFingerprint()),
             "the configuration check cannot see this - that is why the pairing exists");
     }
+
+    /**
+     * A brand new index adopts the identity of the dataset it is first attached to, so
+     * that a later crossed mount has something to be caught against. An index that
+     * already has content keeps the pairing recorded when its documents were written.
+     */
+    @Test
+    public void aNewIndexAdoptsItsDatasetButAnExistingOneDoesNot(@TempDir Path tmp) throws Exception {
+        Path dbA = Files.createDirectory(tmp.resolve("dbA"));
+        Path dbB = Files.createDirectory(tmp.resolve("dbB"));
+        org.apache.jena.sparql.core.DatasetGraph dsgA =
+            org.apache.jena.tdb2.DatabaseMgr.connectDatasetGraph(dbA.toString());
+        org.apache.jena.sparql.core.DatasetGraph dsgB =
+            org.apache.jena.tdb2.DatabaseMgr.connectDatasetGraph(dbB.toString());
+
+        Directory dir = new ByteBuffersDirectory();
+        ShaclTextIndexLucene fresh = new ShaclTextIndexLucene(dir, config(true));
+        fresh.checkOrCompletePairing(dsgA);
+        fresh.commit();
+        fresh.close();
+
+        String adopted = ShaclIndexStamp.read(dir).pairedDatasetId();
+        assertNotNull(adopted, "a new index should adopt the dataset it is attached to");
+        assertEquals(DatasetInstanceId.read(dbA), adopted);
+
+        // Reopened and attached to the other dataset: the pairing must not be rewritten.
+        ShaclTextIndexLucene reopened = new ShaclTextIndexLucene(dir, config(true));
+        reopened.checkOrCompletePairing(dsgB);
+        reopened.commit();
+
+        assertEquals(adopted, ShaclIndexStamp.read(dir).pairedDatasetId(),
+            "an existing index must keep the pairing its documents were written under");
+        assertEquals(ShaclIndexStamp.Status.MISMATCH,
+            ShaclIndexStamp.comparePairing(ShaclIndexStamp.read(dir), DatasetInstanceId.read(dbB)),
+            "attaching a paired index to another dataset is a mismatch");
+    }
+
+    /**
+     * A paired index attached to a dataset that has never been indexed mints an identity
+     * for it, so the crossed mount is reported rather than passed over as unknown. This
+     * is the plain-{@code tdbloader} case: the database has no identity of its own.
+     */
+    @Test
+    public void aPairedIndexMintsAnIdentityForAnAnonymousDataset(@TempDir Path tmp) throws Exception {
+        Path dbA = Files.createDirectory(tmp.resolve("dbA"));
+        Path dbB = Files.createDirectory(tmp.resolve("dbB"));
+        org.apache.jena.sparql.core.DatasetGraph dsgB =
+            org.apache.jena.tdb2.DatabaseMgr.connectDatasetGraph(dbB.toString());
+
+        Directory dir = new ByteBuffersDirectory();
+        ShaclTextIndexLucene built = new ShaclTextIndexLucene(dir, config(true));
+        built.stampConfig(DatasetInstanceId.readOrMint(dbA));
+        built.commit();
+        built.close();
+
+        assertNull(DatasetInstanceId.read(dbB), "precondition: dbB has never been indexed");
+
+        ShaclTextIndexLucene crossed = new ShaclTextIndexLucene(dir, config(true));
+        crossed.checkOrCompletePairing(dsgB);
+
+        String mintedForB = DatasetInstanceId.read(dbB);
+        assertNotNull(mintedForB, "a paired index should give the attached dataset an identity to be judged by");
+        assertEquals(ShaclIndexStamp.Status.MISMATCH,
+            ShaclIndexStamp.comparePairing(ShaclIndexStamp.read(dir), mintedForB));
+    }
+
+    /**
+     * An <em>unpaired</em> index reaches no verdict, so it must not write into the
+     * dataset directory. There would be nothing to compare the identity against.
+     */
+    @Test
+    public void anUnpairedIndexDoesNotMintAnIdForTheDataset(@TempDir Path tmp) throws Exception {
+        Path db = Files.createDirectory(tmp.resolve("db"));
+        org.apache.jena.sparql.core.DatasetGraph dsg =
+            org.apache.jena.tdb2.DatabaseMgr.connectDatasetGraph(db.toString());
+
+        Directory dir = new ByteBuffersDirectory();
+        ShaclTextIndexLucene first = new ShaclTextIndexLucene(dir, config(true));
+        first.stampConfig(null);
+        first.commit();
+        first.close();
+
+        ShaclTextIndexLucene reopened = new ShaclTextIndexLucene(dir, config(true));
+        reopened.checkOrCompletePairing(dsg);
+
+        assertNull(DatasetInstanceId.read(db),
+            "with no pairing to check against there is no verdict, so no reason to write");
+    }
 }
