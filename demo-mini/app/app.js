@@ -98,7 +98,16 @@ async function sparql(query) {
 
 /* ── the CQL2-JSON filter, built from the whole UI state ───────────────── */
 
-function buildFilter() {
+/**
+ * @param skip clause names to leave out — "region", "country", "reviewer", "stars".
+ *
+ * A facet must not be counted under its own filter, or drilling into a value hides every
+ * sibling and the value itself. Asking for the region level with the region clause omitted
+ * is what keeps all three regions on screen, counted correctly under the OTHER filters,
+ * with the chosen one ticked. Standard faceted-search behaviour; Solr and Elasticsearch
+ * spell it as excluding a tagged filter.
+ */
+function buildFilter(skip = {}) {
     const clauses = [];
 
     for (const [field, values] of Object.entries(state.sel)) {
@@ -107,8 +116,8 @@ function buildFilter() {
 
     // A "=" on a hierarchy level both narrows the results AND tells luc:facet to return
     // that level's children. One clause, both jobs — there is no drill-down argument.
-    if (state.region) clauses.push(eq(F('region'), state.region));
-    if (state.country) clauses.push(eq(F('country'), state.country));
+    if (state.region && !skip.region) clauses.push(eq(F('region'), state.region));
+    if (state.country && !skip.country) clauses.push(eq(F('country'), state.country));
 
     if (state.dateFrom && state.dateTo) {
         clauses.push({ op: 'between', args: [prop(F('publishedOn')), state.dateFrom, state.dateTo] });
@@ -128,10 +137,10 @@ function buildFilter() {
     // compiler folds them into one block join: ONE review must satisfy both. Selecting
     // "Priya" and "5" finds recipes Priya rated 5 — not recipes Priya reviewed that someone
     // else rated 5. Selecting a reviewer also drives the reviewer_stars drill-down.
-    if (state.reviewer) clauses.push(eq(F('reviewer'), state.reviewer));
-    if (state.starsExact !== null) {
+    if (state.reviewer && !skip.reviewer) clauses.push(eq(F('reviewer'), state.reviewer));
+    if (state.starsExact !== null && !skip.stars) {
         clauses.push(eq(F('stars'), state.starsExact));
-    } else if (state.minStars) {
+    } else if (state.minStars && !skip.stars) {
         clauses.push({ op: '>=', args: [prop(F('stars')), Number(state.minStars)] });
     }
 
@@ -164,16 +173,15 @@ function sortSpec() {
 const lit = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
 /** The 7 luc:query / luc:facet arguments shared by every request in this view. */
-function argsFor(kind) {
+function argsFor(kind, skip = {}, facetFields = null) {
     const fs = fieldSpec();
     const spec = fs === 'default' ? '"default"' : `'${fs}'`;
     const q = lit(queryString());
-    const filter = buildFilter();
+    const filter = buildFilter(skip);
     const f = filter ? `'${filter}'` : '""';
     if (kind === 'facet') {
-        const fields = JSON.stringify([
-            ...FACETS.map(x => x.key),
-            REVIEW_DIM.key,
+        const fields = JSON.stringify(facetFields || [
+            ...FACETS.filter(x => !x.dimension).map(x => x.key),
             { field: F('prepMinutes'), ranges: PREP_RANGES },
         ]);
         return `"default" ${spec} ${q} '${fields}' ${f} 50 0`;
@@ -213,13 +221,25 @@ GROUP BY ?entity ?rank ?totalHits ?score ?label ?desc ?code ?course ?country ?re
 ORDER BY ?rank`;
 }
 
-function facetQuery() {
+function facetQuery(skip = {}, facetFields = null) {
     return `PREFIX luc: <urn:jena:lucene:index#>
 
 SELECT ?field ?value ?low ?high ?count
 WHERE {
-    (?field ?value ?low ?high ?count) luc:facet (${argsFor('facet')})
+    (?field ?value ?low ?high ?count) luc:facet (${argsFor('facet', skip, facetFields)})
 }`;
+}
+
+/**
+ * One hierarchy level.
+ *
+ * The server returns a hierarchy one level at a time: no drill filter means the top level,
+ * an "=" on a level means that level's children. So a two-level tree is two requests —
+ * each omitting the filter belonging to the level it is asking about, so the level's own
+ * values survive being chosen.
+ */
+function levelQuery(dimension, skip) {
+    return facetQuery(skip, [dimension]);
 }
 
 /**
@@ -279,12 +299,26 @@ async function run() {
     renderTurtle();
 
     const reviewFilterActive = !!(state.reviewer || state.minStars || state.starsExact !== null);
-    const jobs = [sparql(searchQuery()), sparql(facetQuery())];
-    if (reviewFilterActive) jobs.push(sparql(nestedQuery()));
 
-    let results, facets, nested;
+    // Each hierarchy level is its own request, omitting the filter for the level being
+    // asked about. That is what costs the extra round trips, and what stops a chosen value
+    // from vanishing out of the list that offers it. With ten documents the cost is
+    // irrelevant; on a real corpus it is the ordinary price of exclude-own-filter faceting.
+    const jobs = {
+        results: sparql(searchQuery()),
+        facets: sparql(facetQuery()),
+        regionTop: sparql(levelQuery(FACETS[0].key, { region: true, country: true })),
+        reviewerTop: sparql(levelQuery(REVIEW_DIM.key, { reviewer: true, stars: true })),
+        regionKids: state.region ? sparql(levelQuery(FACETS[0].key, { country: true })) : null,
+        reviewerKids: state.reviewer ? sparql(levelQuery(REVIEW_DIM.key, { stars: true })) : null,
+        nested: reviewFilterActive ? sparql(nestedQuery()) : null,
+    };
+
+    let done;
     try {
-        [results, facets, nested] = await Promise.all(jobs);
+        const keys = Object.keys(jobs);
+        const settled = await Promise.all(keys.map(k => jobs[k]));
+        done = Object.fromEntries(keys.map((k, i) => [k, settled[i]]));
     } catch (err) {
         if (mine !== seq) return;
         el('results').innerHTML = `<div class="error">${esc(err.message)}</div>`;
@@ -293,8 +327,8 @@ async function run() {
     }
     if (mine !== seq) return;
 
-    await renderResults(results, nested);
-    await renderFacets(facets);
+    await renderResults(done.results, done.nested);
+    await renderFacets(done);
 }
 
 /**
@@ -398,8 +432,9 @@ async function renderResults(res, nested) {
     }
 }
 
+/** @param res the bundle from run(): base facets plus one response per hierarchy level. */
 async function renderFacets(res) {
-    const rows = bindings(res);
+    const rows = bindings(res.facets);
     const groups = new Map();   // facet key -> [{value, count}]
     const ranges = [];
     for (const b of rows) {
@@ -413,25 +448,48 @@ async function renderFacets(res) {
         groups.get(field).push({ value: val(b, 'value'), count });
     }
 
+    const valuesOf = (response, dim) => response
+        ? bindings(response).filter(b => val(b, 'field') === dim)
+            .map(b => ({ value: val(b, 'value'), count: Number(val(b, 'count')) }))
+        : [];
+
+    const regionTop = valuesOf(res.regionTop, FACETS[0].key);
+    const regionKids = valuesOf(res.regionKids, FACETS[0].key);
+    const reviewerTop = valuesOf(res.reviewerTop, REVIEW_DIM.key);
+    const reviewerKids = valuesOf(res.reviewerKids, REVIEW_DIM.key);
+
     const iris = [];
     for (const list of groups.values()) list.forEach(x => { if (isIri(x.value)) iris.push(x.value); });
-    // The drilled-into parent is not in any returned list — the server has moved on to its
-    // children — so it has to be added explicitly or the heading shows a raw IRI.
-    [state.region, state.country].forEach(v => { if (isIri(v)) iris.push(v); });
+    [...regionTop, ...regionKids].forEach(x => { if (isIri(x.value)) iris.push(x.value); });
     const lab = await labels.resolveMany(iris);
     const L = v => lab.get(v) || shortIri(v);
 
     // Reviewer lives in its own group next to the stars selector, because the two combine
     // into a single-child filter and belong together in the UI.
-    el('facet-reviewer').innerHTML = renderReviewHierarchy(groups.get(REVIEW_DIM.key) || []);
+    el('facet-reviewer').innerHTML = renderTree(reviewerTop, reviewerKids, {
+        parentKind: 'reviewer', childKind: 'stars-exact',
+        parentSel: state.reviewer,
+        childSel: state.starsExact === null ? null : String(state.starsExact),
+        label: v => v, childLabel: v => `<span class="stars">${'★'.repeat(Number(v) || 0)}</span>`,
+    });
 
     let html = '';
+    if (regionTop.length) {
+        html += `<div class="facet-group"><h3>${esc(FACETS[0].title)}</h3>`
+            + renderTree(regionTop, regionKids, {
+                parentKind: 'region', childKind: 'country',
+                parentSel: state.region, childSel: state.country,
+                label: L, childLabel: v => esc(L(v)),
+            })
+            + `</div>`;
+    }
     for (const f of FACETS) {
+        if (f.dimension) continue;
         const list = groups.get(f.key) || [];
         if (!list.length) continue;
         html += `<div class="facet-group"><h3>${esc(f.title)}</h3>`;
         if (f.note) html += `<p class="hint">${esc(f.note)}</p>`;
-        html += f.dimension ? renderHierarchy(list, L) : renderOptions(f.key, list, L, 'multi');
+        html += renderOptions(f.key, list, L, 'multi');
         html += `</div>`;
     }
 
@@ -451,54 +509,34 @@ async function renderFacets(res) {
 }
 
 /**
- * The hierarchy renders one level at a time, because that is what the server returns: no
- * drill-down filter means the top level, a "=" on the parent means that parent's children.
+ * A hierarchy, drawn as a tree.
+ *
+ * Both levels are on screen at once: every parent, with the chosen one ticked, and that
+ * parent's children nested beneath it with the chosen child ticked. Choosing a value must
+ * never remove it from the list you chose it from, and must never hide its siblings — the
+ * two levels come from separate requests precisely so that both survive selection.
+ *
+ * Unticking a parent clears the child with it; there is no separate "back" affordance,
+ * because the tick is the state and the tick is how you undo it.
  */
-function renderHierarchy(list, L) {
-    if (state.region) {
-        const back = `<button class="linkish" data-kind="hier-clear">← all regions</button>`;
-        const head = `<div class="hier-parent"><strong>${esc(L(state.region))}</strong></div>`;
-        const kids = `<ul class="hier-children">` + list.map(x => {
-            const on = state.country === x.value;
-            return `<li><label class="opt"><input type="checkbox" data-kind="country" data-value="${esc(x.value)}" ${on ? 'checked' : ''}>
-        <span class="name">${esc(L(x.value))}</span><span class="count">${x.count}</span></label></li>`;
-        }).join('') + `</ul>`;
-        return back + head + kids;
-    }
-    return `<ul>` + list.map(x =>
-        `<li><label class="opt"><input type="checkbox" data-kind="region" data-value="${esc(x.value)}">
-      <span class="name">${esc(L(x.value))}</span><span class="count">${x.count}</span></label></li>`
-    ).join('') + `</ul>`;
-}
-
-/**
- * The reviewer dimension, one level at a time. With no reviewer selected the server
- * returns reviewer names; the "=" on field:reviewer that selecting one adds turns the same
- * request into that reviewer's own star breakdown — correlated per review row, so Priya's
- * "5" counts only Priya's five-star reviews.
- */
-function renderReviewHierarchy(list) {
-    if (!list.length && !state.reviewer) return '';
-    if (state.reviewer) {
-        // Once a star value is picked the drill path is complete, so the server has no
-        // deeper level to return and `list` comes back empty. Keep the chosen value on
-        // screen anyway, or there would be no way to unpick it from this panel.
-        if (!list.length && state.starsExact !== null) {
-            list = [{ value: String(state.starsExact), count: '' }];
-        }
-        const stars = list.map(x => {
-            const on = state.starsExact === Number(x.value);
-            return `<li><label class="opt"><input type="checkbox" data-kind="stars-exact" data-value="${esc(x.value)}" ${on ? 'checked' : ''}>
-        <span class="name stars">${'★'.repeat(Number(x.value) || 0)}</span><span class="count">${x.count}</span></label></li>`;
-        }).join('');
-        return `<button class="linkish" data-kind="reviewer-clear">← all reviewers</button>
-      <div class="hier-parent"><strong>${esc(state.reviewer)}</strong></div>
-      <ul class="hier-children">${stars}</ul>`;
-    }
-    return `<ul>` + list.map(x =>
-        `<li><label class="opt"><input type="checkbox" data-kind="reviewer" data-value="${esc(x.value)}">
-      <span class="name">${esc(x.value)}</span><span class="count">${x.count}</span></label></li>`
-    ).join('') + `</ul>`;
+function renderTree(parents, kids, o) {
+    if (!parents.length) return '';
+    return `<ul>` + parents.map(x => {
+        const on = o.parentSel === x.value;
+        const child = on && kids.length
+            ? `<ul class="hier-children">` + kids.map(k => {
+                const kon = o.childSel === k.value;
+                return `<li><label class="opt"><input type="checkbox" data-kind="${o.childKind}"
+                  data-value="${esc(k.value)}" ${kon ? 'checked' : ''}>
+                  <span class="name">${o.childLabel(k.value)}</span>
+                  <span class="count">${k.count}</span></label></li>`;
+            }).join('') + `</ul>`
+            : '';
+        return `<li><label class="opt"><input type="checkbox" data-kind="${o.parentKind}"
+              data-value="${esc(x.value)}" ${on ? 'checked' : ''}>
+              <span class="name">${esc(o.label(x.value))}</span>
+              <span class="count">${x.count}</span></label>${child}</li>`;
+    }).join('') + `</ul>`;
 }
 
 function renderOptions(field, list, L, kind) {
@@ -526,9 +564,6 @@ function wireFacetInputs() {
                     state.reviewer = state.reviewer === d.value ? null : d.value;
                     state.starsExact = null;
                     break;
-                case 'reviewer-clear':
-                    state.reviewer = null; state.starsExact = null;
-                    break;
                 case 'stars-exact': {
                     const n = Number(d.value);
                     state.starsExact = state.starsExact === n ? null : n;
@@ -540,9 +575,6 @@ function wireFacetInputs() {
                     break;
                 case 'country':
                     state.country = state.country === d.value ? null : d.value;
-                    break;
-                case 'hier-clear':
-                    state.region = null; state.country = null;
                     break;
                 case 'prep': {
                     const lo = d.low === '' ? null : Number(d.low);

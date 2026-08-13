@@ -107,7 +107,14 @@ aside:not(#rhs) {
   border: 0; background: none; cursor: pointer; color: var(--muted);
   font: inherit; width: 1.1rem; padding: 0; line-height: 1;
 }
-.hier-children { margin-left: 1.15rem; border-left: 1px solid var(--line); padding-left: .4rem; }
+/* Needs to out-specify `.facet-group ul { margin: 0 }` above, or the child level renders
+   flush with its parent and the tree reads as one flat list. */
+.facet-group ul.hier-children,
+#facet-reviewer ul.hier-children {
+  margin: .1rem 0 .25rem 1.15rem;
+  border-left: 1px solid var(--line);
+  padding-left: .45rem;
+}
 
 .hint { font-size: .78rem; color: var(--muted); margin: .1rem 0 .5rem; }
 .daterow { display: flex; gap: .4rem; }

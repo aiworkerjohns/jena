@@ -185,6 +185,16 @@ you region's *flat* counts — which look identical at the top level and stop be
 equivalent the moment you drill in. The app reads the real names from
 `/$/config/effective` rather than hardcoding them.
 
+**A hierarchy level must not be counted under its own filter.** The server returns one
+level at a time — no drill filter means the top level, an `=` on a level means that level's
+children — so a two-level tree is two requests, each omitting the filter belonging to the
+level it is asking about. Without that, choosing "Europe" removes Europe and its siblings
+from the very list you chose it from, and choosing "France" empties the list entirely,
+because the drill path is then complete and the server is being asked for a third level
+that does not exist. Both levels stay on screen with the chosen values ticked, and sibling
+counts stay correct because they are computed under the *other* active filters. Solr and
+Elasticsearch spell the same idea as excluding a tagged filter.
+
 **A child-scoped field has no entity-level flat facet.** `field:reviewer` is declared
 `idx:facetable true` and the index log lists it as facetable, but `luc:facet` on it returns
 zero rows, and `"*"` does not expand to it. This is documented (`03-configuration.md`,
