@@ -13,6 +13,7 @@ PREFIX ja:      <http://jena.hpl.hp.com/2005/11/Assembler#>
 PREFIX rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 PREFIX rdfs:    <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX dcterms: <http://purl.org/dc/terms/>
+PREFIX schema:  <https://schema.org/>
 PREFIX sh:      <http://www.w3.org/ns/shacl#>
 PREFIX tdb2:    <http://jena.apache.org/2016/tdb#>
 PREFIX text:    <http://jena.apache.org/text#>
@@ -45,7 +46,7 @@ PREFIX kt:      <http://example.org/kitchen/>
     ## an in-memory taxonomy would die with it — silently emptying every hierarchical
     ## facet at serve time.
     text:taxonomyDirectory <file:Taxonomy> ;
-    text:shapes ( :RecipeShape ) ;
+    text:shapes ( :RecipeShape :ReviewerShape ) ;
     text:storeValues false ;
     text:maxFacetHits 50000 ;
 
@@ -80,11 +81,25 @@ PREFIX kt:      <http://example.org/kitchen/>
 
 ## FEATURE 3a — TEXT / BM25. No idx:analyzer, so the index-wide StandardAnalyzer applies
 ## and BM25 ranks the hits. This is what the main search box searches.
-field:title
-    idx:fieldName "title" ;
+##
+## FEATURE 5, the loud version. ONE field, fed by THREE predicates across TWO shapes:
+## a recipe's name may be rdfs:label, schema:name or dcterms:title (real data is rarely
+## tidy), and a reviewer's name is schema:name. Searching "name" therefore searches every
+## name in the corpus regardless of which predicate carries it or what kind of thing it is
+## on — no UNION at query time, no per-predicate field.
+field:name
+    idx:fieldName "name" ;
     idx:fieldType idx:TextField ;
     idx:stored true ;
     idx:defaultSearch true .
+
+## The class of the indexed entity, so the UI can offer "recipes / reviewers / both".
+## Fed from rdf:type on both shapes.
+field:entityType
+    idx:fieldName "entityType" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;
+    idx:facetable true .
 
 field:summary
     idx:fieldName "summary" ;
@@ -178,7 +193,7 @@ field:embedding
     idx:fieldType idx:VectorField ;
     idx:dimension 384 ;
     idx:similarity idx:Cosine ;
-    idx:embeddingSource ( field:title field:summary ) .
+    idx:embeddingSource ( field:name field:summary ) .
 
 ## --- FEATURE 7 — fields bound to CSV columns ---
 ## These carry no sh:path. A field is "external" because a column binds it, nothing else.
@@ -215,7 +230,13 @@ field:reviewMonth
 :RecipeShape
     sh:targetClass kt:Recipe ;
 
-    sh:property [ idx:field field:title      ; sh:path rdfs:label ] ;
+    ## The fan-in. Three occurrences, three paths, ONE canonical field — the demo data
+    ## deliberately spreads recipe names across all three predicates.
+    sh:property [ idx:field field:name       ; sh:path rdfs:label ] ;
+    sh:property [ idx:field field:name       ; sh:path schema:name ] ;
+    sh:property [ idx:field field:name       ; sh:path dcterms:title ] ;
+
+    sh:property [ idx:field field:entityType ; sh:path rdf:type ] ;
     sh:property [ idx:field field:summary    ; sh:path dcterms:description ] ;
     sh:property [ idx:field field:course     ; sh:path kt:course ] ;
     sh:property [ idx:field field:country    ; sh:path kt:country ] ;
@@ -269,3 +290,27 @@ field:reviewMonth
         ## counted.
         idx:facetHierarchy ( field:reviewer field:stars ) ;
     ] .
+
+## ==========================================================================
+## A second shape — a different target class, sharing fields with the first
+## ==========================================================================
+##
+## FEATURE 5, across shapes rather than across paths. field:name and field:summary are the
+## SAME index fields the recipes use, so one search covers both kinds of entity and one
+## BM25 ranking orders them together. What separates them is field:entityType, which is
+## what the app's Recipes / Reviewers / Both toggle filters on.
+##
+## Note what this shape does NOT have: no course, no country, no prep time, no review
+## children. A field belongs to whichever shapes populate it; nothing here has to be
+## nullable or defaulted for the shapes that do not use it.
+
+:ReviewerShape
+    sh:targetClass kt:Reviewer ;
+
+    sh:property [ idx:field field:name       ; sh:path schema:name ] ;
+    sh:property [ idx:field field:entityType ; sh:path rdf:type ] ;
+    sh:property [ idx:field field:summary    ; sh:path dcterms:description ] ;
+
+    ## Reviewers are embedded too, from the same two source fields, so semantic search
+    ## crosses entity types as readily as keyword search does.
+    idx:vectorField field:embedding .

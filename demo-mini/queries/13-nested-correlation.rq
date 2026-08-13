@@ -7,14 +7,16 @@
 # neither may appear. Expect exactly: Slow-Braised Beef Shin, Cacio e Pepe, Miso Soup.
 
 PREFIX luc:  <urn:jena:lucene:index#>
+PREFIX schema:  <https://schema.org/>
+PREFIX dcterms: <http://purl.org/dc/terms/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
-SELECT ?label
+SELECT ?name
 WHERE {
     (?hit ?entity) luc:query (
         "default" "default" ""
         '{"op":"and","args":[{"op":"=","args":[{"property":"urn:jena:lucene:field#reviewer"},"Priya"]},{"op":"=","args":[{"property":"urn:jena:lucene:field#stars"},5]}]}'
         "" 20 0) .
-    ?entity rdfs:label ?label .
+    ?entity rdfs:label|schema:name|dcterms:title ?name .
 }
-ORDER BY ?label
+ORDER BY ?name

@@ -288,3 +288,25 @@ table.res td { font-family: ui-monospace, monospace; font-size: .76rem; word-bre
   font-size: .72rem; color: var(--muted); font-variant-numeric: tabular-nums;
 }
 .datehist .axis .muted { opacity: .55; }
+
+/* ── recipes / reviewers / both ── */
+.kinds { display: flex; align-items: center; gap: .35rem; margin-bottom: .6rem; }
+.kind-label {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); font-weight: 600; margin-right: .2rem;
+}
+.kind {
+  border: 1px solid var(--line); background: #fff; cursor: pointer;
+  padding: .22rem .6rem; border-radius: 999px; font-size: .8rem; color: var(--ink);
+}
+.kind:hover { border-color: var(--accent); }
+.kind.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.kind-n { opacity: .6; font-variant-numeric: tabular-nums; margin-left: .15rem; }
+.kind.on .kind-n { opacity: .8; }
+.kind-tag {
+  font-size: .62rem; text-transform: uppercase; letter-spacing: .05em;
+  background: #eef3f7; color: #3f5a70; border: 1px solid var(--line);
+  border-radius: 3px; padding: .05rem .3rem; vertical-align: middle; font-weight: 500;
+}
+.kind[disabled] { opacity: .45; cursor: default; }
+.kind[disabled]:hover { border-color: var(--line); }

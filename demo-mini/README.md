@@ -1,7 +1,7 @@
 # demo-mini
 
-Ten made-up recipes, one SHACL shape, and every feature of this fork's entity-per-document
-index demonstrated exactly once. Small enough that you can check any facet count by eye.
+Ten made-up recipes and six reviewers, two SHACL shapes, and every feature of this fork's
+entity-per-document index demonstrated exactly once. Small enough that you can check any facet count by eye.
 
 It is deliberately separate from `demo/`, which has grown to three data files, 25 queries
 and a 3,000-line app. Nothing here is shared with it.
@@ -56,10 +56,42 @@ access.
 | 3c | Edge n-gram | `text:EdgeNGramAnalyzer` + `text:tokenized` | `08` | Code typeahead mode |
 | 3d | INT / range facets | `idx:IntField` | `07` | "Prep time" buckets |
 | 4 | Hierarchical faceting | `idx:facetHierarchy` (root **and** nested) | `04`, `05`, `17` | Region › country, Reviewer › stars |
-| 5 | One field, many paths | two `sh:property` occurrences | `09` | "People (author or tester)" |
+| 5 | One field, many paths **and many shapes** | repeated `sh:property` occurrences | `09`, `18` | "People (author or tester)", and the Recipes / Reviewers / Both toggle |
 | 6 | Match projection | `idx:stored` | `11`, `12` | Index view panel, and matched reviews on each card |
 | 7 | External CSV | `idx:externalSource` | `12`, `13`, `17` | Reviews panel |
 | 8 | Vector search | `idx:VectorField` | `15`, `16` | Semantic mode |
+
+## One field, three predicates, two shapes
+
+`field:name` is the loudest version of the fan-in, because the demo data is deliberately
+untidy in the way real data is:
+
+| Fed by | On |
+|---|---|
+| `rdfs:label` | recipes r01, r02, r03, r09 |
+| `schema:name` | recipes r04, r05, r06 |
+| `dcterms:title` | recipes r07, r08, r10 |
+| `schema:name` | all six reviewers — a **different target class** |
+
+One search over one field finds a name whatever predicate carries it and whatever kind of
+thing it is on. No `UNION`, no per-predicate field, no separate query per entity type.
+Query `18` prints the source predicate beside each hit so the spread is visible.
+
+The **Recipes / Reviewers / Both** toggle above the search box filters on `field:entityType`,
+which both shapes populate from `rdf:type`. Two things are worth noticing while using it:
+
+- **"Both" is the absence of a filter**, not an `in` of every class. With two shapes the two
+  are equivalent and no filter is cheaper; it would have to become an explicit `in` the
+  moment a third shape existed that should be excluded.
+- **Switch to Reviewers and the entire facet sidebar disappears.** Every facetable field in
+  this index belongs to the recipe shape — a reviewer has a name and a description and
+  nothing else to count. A field belongs to whichever shapes populate it, so nothing had to
+  be nullable or defaulted for the shape that does not use it.
+
+Searching across both kinds at once is where it pays off. `pastry` returns Tarte Tatin and
+the reviewer Tomas, ranked together by one BM25 pass. In Semantic mode, "someone who cares
+about long simmered stock" returns Yuki, whose description is "broths, stocks and anything
+simmered for longer than seems reasonable" — and Tonkotsu Ramen a few places below.
 
 ## The date histogram
 

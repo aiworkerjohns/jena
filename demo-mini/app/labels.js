@@ -25,6 +25,7 @@ const LABEL_PREDICATES = [
     'http://www.w3.org/2000/01/rdf-schema#label',
     'http://www.w3.org/2004/02/skos/core#prefLabel',
     'http://purl.org/dc/terms/title',
+    'https://schema.org/name',
 ];
 
 /** Bound on concurrent label requests, as label-cache-client does. */

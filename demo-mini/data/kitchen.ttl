@@ -12,7 +12,13 @@ PREFIX kt:      <http://example.org/kitchen/>
 PREFIX rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 PREFIX rdfs:    <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX dcterms: <http://purl.org/dc/terms/>
+PREFIX schema:  <https://schema.org/>
 PREFIX xsd:     <http://www.w3.org/2001/XMLSchema#>
+
+## --- The two entity classes, labelled so the kind toggle can show names ---
+
+kt:Recipe    rdfs:label "Recipe" .
+kt:Reviewer  rdfs:label "Reviewer" .
 
 ## --- Vocabulary: regions ---
 
@@ -48,6 +54,40 @@ kt:person-ada    rdfs:label "Ada Fournier" .
 kt:person-bruno  rdfs:label "Bruno Vega" .
 kt:person-chika  rdfs:label "Chika Mori" .
 kt:person-dara   rdfs:label "Dara Singh" .
+
+## --- Reviewers: a SECOND entity type, indexed by a second shape ---
+##
+## Their names use schema:name; the recipes above spread theirs across rdfs:label,
+## schema:name and dcterms:title. All four paths feed the one index field, so a search for
+## a name finds it whatever predicate carries it and whatever kind of thing it is on.
+##
+## The names match the reviewer column of data/reviews.csv, so the same person appears both
+## as a searchable entity here and as an external child record on the recipes they rated —
+## from two entirely different sources.
+
+kt:reviewer-priya a kt:Reviewer ;
+    schema:name "Priya" ;
+    dcterms:description "Cooks almost entirely from pantry staples and reviews accordingly. Harsh on anything that needs a special trip." .
+
+kt:reviewer-noor a kt:Reviewer ;
+    schema:name "Noor" ;
+    dcterms:description "Spent a decade in restaurant kitchens and still judges a dish by how it would hold up on a Friday service." .
+
+kt:reviewer-tomas a kt:Reviewer ;
+    schema:name "Tomas" ;
+    dcterms:description "Bakes more than he cooks. Pastry, laminated dough and long fermentation are where his notes get enthusiastic." .
+
+kt:reviewer-yuki a kt:Reviewer ;
+    schema:name "Yuki" ;
+    dcterms:description "Interested in broths, stocks and anything simmered for longer than seems reasonable." .
+
+kt:reviewer-kwame a kt:Reviewer ;
+    schema:name "Kwame" ;
+    dcterms:description "Chases heat and acidity. Will tell you a dish is underseasoned before he tells you it is good." .
+
+kt:reviewer-ines a kt:Reviewer ;
+    schema:name "Ines" ;
+    dcterms:description "Reviews desserts and little else, on the grounds that life is short." .
 
 ## --- The ten recipes ---
 
@@ -86,7 +126,7 @@ kt:recipe-r03 a kt:Recipe ;
     kt:testedBy kt:person-chika .
 
 kt:recipe-r04 a kt:Recipe ;
-    rdfs:label "Chicken Tikka Masala" ;
+    schema:name "Chicken Tikka Masala" ;
     dcterms:description "Yoghurt-marinated chicken grilled hard, then finished in a spiced tomato and cream sauce." ;
     kt:code "RCP-2020-0203" ;
     kt:country kt:country-india ;
@@ -97,7 +137,7 @@ kt:recipe-r04 a kt:Recipe ;
     kt:testedBy kt:person-bruno .
 
 kt:recipe-r05 a kt:Recipe ;
-    rdfs:label "Cacio e Pepe" ;
+    schema:name "Cacio e Pepe" ;
     dcterms:description "Spaghetti tossed with pecorino and cracked black pepper. Four ingredients, no sauce to speak of." ;
     kt:code "RCP-2021-0011" ;
     kt:country kt:country-italy ;
@@ -109,7 +149,7 @@ kt:recipe-r05 a kt:Recipe ;
     kt:testedBy kt:person-ada .
 
 kt:recipe-r06 a kt:Recipe ;
-    rdfs:label "Tiramisu" ;
+    schema:name "Tiramisu" ;
     dcterms:description "Savoiardi soaked in espresso, layered with mascarpone and dusted with cocoa." ;
     kt:code "RCP-2021-0154" ;
     kt:country kt:country-italy ;
@@ -121,7 +161,7 @@ kt:recipe-r06 a kt:Recipe ;
     kt:testedBy kt:person-chika .
 
 kt:recipe-r07 a kt:Recipe ;
-    rdfs:label "Ceviche" ;
+    dcterms:title "Ceviche" ;
     dcterms:description "Raw white fish cured in lime juice with red onion, coriander and a little chilli." ;
     kt:code "RCP-2022-0006" ;
     kt:country kt:country-peru ;
@@ -133,7 +173,7 @@ kt:recipe-r07 a kt:Recipe ;
     kt:testedBy kt:person-dara .
 
 kt:recipe-r08 a kt:Recipe ;
-    rdfs:label "Mole Poblano" ;
+    dcterms:title "Mole Poblano" ;
     dcterms:description "Chillies, nuts and a little chocolate ground into a dark sauce and simmered slowly over turkey." ;
     kt:code "RCP-2022-0271" ;
     kt:country kt:country-mexico ;
@@ -156,7 +196,7 @@ kt:recipe-r09 a kt:Recipe ;
     kt:testedBy kt:person-bruno .
 
 kt:recipe-r10 a kt:Recipe ;
-    rdfs:label "Miso Soup" ;
+    dcterms:title "Miso Soup" ;
     dcterms:description "Dashi whisked with fermented soybean paste, dropped with tofu cubes and sliced spring onion." ;
     kt:code "RCP-2024-0130" ;
     kt:country kt:country-japan ;
@@ -177,7 +217,8 @@ kt:recipe-r10 a kt:Recipe ;
 
 PREFIX field: <urn:jena:lucene:field#>
 
-field:title        rdfs:label "Title" .
+field:name         rdfs:label "Name" .
+field:entityType   rdfs:label "Kind" .
 field:summary      rdfs:label "Summary" .
 field:code         rdfs:label "Recipe code" .
 field:codeText     rdfs:label "Recipe code" .

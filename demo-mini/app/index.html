@@ -10,7 +10,7 @@
 <body>
 
 <header>
-  <h1>demo-mini <span class="sub">ten recipes, every feature once</span></h1>
+  <h1>demo-mini <span class="sub">ten recipes, six reviewers, every feature once</span></h1>
   <div id="index-status" class="status" title="from GET /$/config/effective">checking index…</div>
 </header>
 
@@ -24,14 +24,14 @@
     </nav>
 
     <section id="panel-facets" class="panel">
-      <div class="facet-group">
+      <div class="facet-group" id="group-published">
         <h3>Published</h3>
         <p class="hint">A range facet on the <code>idx:TemporalField</code> — so you can see
           where the data is before choosing a window.</p>
         <div id="datehist" class="datehist"></div>
       </div>
 
-      <div class="facet-group">
+      <div class="facet-group" id="group-reviews">
         <h3>Reviews <span class="tag csv">from CSV</span></h3>
         <p class="hint">Both clauses must be satisfied by <em>one</em> review row.</p>
         <label class="inline">min stars
@@ -45,6 +45,13 @@
       </div>
 
       <div id="facets"></div>
+
+      <p id="facets-empty" class="hint" hidden>
+        No facets apply. Every facetable field in this index belongs to the recipe shape —
+        a reviewer has a name and a description and nothing else to count. Fields belong to
+        the shapes that populate them, so nothing here had to be made nullable for the
+        shape that does not use it.
+      </p>
     </section>
 
     <section id="panel-tests" class="panel hidden">
@@ -55,6 +62,8 @@
 
   <!-- ── Main column ── -->
   <main>
+    <div id="kinds" class="kinds"></div>
+
     <div class="searchbar">
       <select id="mode" title="what the search box does">
         <option value="bm25">Keyword (BM25)</option>

@@ -26,6 +26,9 @@ const labels = new LabelResolver(ENDPOINT, '1');
 /** Years covered by the data, discovered at startup — see loadDateAxis(). */
 const dateAxis = { years: [] };
 
+/** Every sh:targetClass in the index, from /$/config/effective. */
+const kinds = { classes: [] };
+
 /**
  * Facet panels, in display order. `dimension` marks the hierarchical one.
  *
@@ -54,7 +57,7 @@ const TESTS = [
     '05-hierarchy-drill', '06-date-range', '07-range-facets', '08-typeahead-ngram',
     '09-fanin-contributor', '10-keyword-iri-filter', '11-match', '12-nested-match-reviews',
     '13-nested-correlation', '14-sort-and-page', '15-vector-search', '16-vector-filtered',
-    '17-nested-hierarchy-correlated',
+    '17-nested-hierarchy-correlated', '18-one-field-many-paths-many-shapes',
 ];
 
 const state = {
@@ -64,6 +67,9 @@ const state = {
     country: null,
     // null means "the whole span", which is not a filter at all. Otherwise [lo, hi] are
     // indices into dateAxis.years, so the slider and the filter cannot disagree.
+    // null = both kinds. Only two shapes exist, so "both" is genuinely the absence of a
+    // filter rather than an "in" of every class.
+    kind: null,
     yearIdx: null,
     minStars: '', reviewer: null, starsExact: null,
     prepBucket: null,   // [low, high]
@@ -132,6 +138,8 @@ function buildFilter(skip = {}, pin = {}) {
     const country = pin.country ?? (skip.country ? null : state.country);
     if (region) clauses.push(eq(F('region'), region));
     if (country) clauses.push(eq(F('country'), country));
+
+    if (state.kind && !skip.kind) clauses.push(eq(F('entityType'), state.kind));
 
     if (state.yearIdx && !skip.date) {
         const [lo, hi] = state.yearIdx;
@@ -207,30 +215,34 @@ function argsFor(kind, skip = {}, facetFields = null, pin = {}) {
 /* ── queries ───────────────────────────────────────────────────────────── */
 
 function searchQuery() {
-    return `PREFIX luc:  <urn:jena:lucene:index#>
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-PREFIX dct:  <http://purl.org/dc/terms/>
-PREFIX kt:   <${KT}>
+    return `PREFIX luc:    <urn:jena:lucene:index#>
+PREFIX rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dct:    <http://purl.org/dc/terms/>
+PREFIX schema: <https://schema.org/>
+PREFIX kt:     <${KT}>
 
-SELECT ?entity ?rank ?totalHits ?score ?label ?desc ?code ?course ?country ?region ?prep ?published
+SELECT ?entity ?type ?rank ?totalHits ?score ?label ?desc ?code ?course ?country ?region ?prep ?published
        (GROUP_CONCAT(DISTINCT STR(?diet);   SEPARATOR="|") AS ?diets)
        (GROUP_CONCAT(DISTINCT STR(?person); SEPARATOR="|") AS ?people)
 WHERE {
     (?hit ?entity ?score ?totalHits ?rank) luc:query (${argsFor('query')}) .
-    ?entity rdfs:label ?label ;
-            dct:description ?desc ;
-            kt:code ?code ;
-            kt:course ?course ;
-            kt:country ?country ;
-            kt:prepMinutes ?prep ;
-            kt:publishedOn ?published .
-    ?country kt:inRegion ?region .
+    ?entity a ?type .
+    # The same fan-in the index does, on the SPARQL side: a name may arrive by any of three
+    # predicates, and this alternative path is the display-time equivalent of the three
+    # sh:property occurrences that feed field:name.
+    ?entity rdfs:label|schema:name|dct:title ?label .
+    OPTIONAL { ?entity dct:description ?desc }
+    # Everything below belongs to recipes only. A reviewer simply has none of it, which is
+    # what makes these OPTIONAL rather than a second query per shape.
+    OPTIONAL { ?entity kt:code ?code }
+    OPTIONAL { ?entity kt:course ?course }
+    OPTIONAL { ?entity kt:country ?country . ?country kt:inRegion ?region }
+    OPTIONAL { ?entity kt:prepMinutes ?prep }
+    OPTIONAL { ?entity kt:publishedOn ?published }
     OPTIONAL { ?entity kt:diet ?diet }
-    # The fan-in, on the SPARQL side this time: the index merges these two predicates into
-    # one field, so the display has to merge them too.
     OPTIONAL { ?entity kt:author|kt:testedBy ?person }
 }
-GROUP BY ?entity ?rank ?totalHits ?score ?label ?desc ?code ?course ?country ?region ?prep ?published
+GROUP BY ?entity ?type ?rank ?totalHits ?score ?label ?desc ?code ?course ?country ?region ?prep ?published
 ORDER BY ?rank`;
 }
 
@@ -331,6 +343,46 @@ WHERE {
 }`;
 }
 
+/* ── the kind toggle: recipes, reviewers, or both ──────────────────────── */
+
+/**
+ * Two shapes share this index, so a hit may be a recipe or a reviewer. The toggle filters
+ * on field:entityType, which both shapes populate from rdf:type.
+ *
+ * "Both" is the ABSENCE of a filter, not an `in` of every class — with only two shapes the
+ * two are equivalent, and no filter is the cheaper and more honest of the pair. It would
+ * have to become an explicit `in` the moment a third shape existed that should be excluded.
+ */
+async function renderKinds(res) {
+    const node = el('kinds');
+    if (!node || kinds.classes.length < 2) { if (node) node.innerHTML = ''; return; }
+
+    // Counts come from the facet, but the LIST comes from the index's target classes. A
+    // kind with no matches must still be offered, or filtering to one kind removes the
+    // control you would use to get back to the other.
+    const counts = new Map(bindings(res || { results: { bindings: [] } })
+        .map(b => [val(b, 'value'), Number(val(b, 'count'))]));
+    const lab = await labels.resolveMany(kinds.classes);
+    const total = [...counts.values()].reduce((n, c) => n + c, 0);
+
+    const button = (value, text, n) =>
+        `<button class="kind ${state.kind === value ? 'on' : ''}" data-value="${esc(value ?? '')}"
+                 ${n === 0 && value ? 'disabled' : ''}>
+           ${esc(text)} <span class="kind-n">${n}</span></button>`;
+
+    node.innerHTML = `<span class="kind-label">Search</span>`
+        + kinds.classes.map(c => button(c, (lab.get(c) || shortIri(c)) + 's', counts.get(c) || 0)).join('')
+        + button(null, 'Both', total);
+
+    node.querySelectorAll('.kind').forEach(b => {
+        b.onclick = () => {
+            state.kind = b.dataset.value || null;
+            state.page = 0;
+            run();
+        };
+    });
+}
+
 /* ── the published-date histogram ──────────────────────────────────────── */
 
 /** Bucket edges, one per year plus a closing edge. */
@@ -368,11 +420,16 @@ function renderDateHistogram(res) {
     if (!node) return;
     if (!dateAxis.years.length) { node.innerHTML = ''; return; }
 
+
     const counts = new Map();
     for (const b of bindings(res || { results: { bindings: [] } })) {
         const year = Number(val(b, 'low')?.slice(0, 4));
         if (!Number.isNaN(year)) counts.set(year, Number(val(b, 'count')));
     }
+    const group = el('group-published');
+    const anyData = [...counts.values()].some(n => n > 0);
+    if (group) group.style.display = anyData || state.yearIdx ? '' : 'none';
+
     const peak = Math.max(1, ...counts.values());
     const last = dateAxis.years.length - 1;
     const [lo, hi] = state.yearIdx || [0, last];
@@ -439,6 +496,7 @@ async function run() {
         regionTop: sparql(levelQuery(FACETS[0].key, { region: true, country: true })),
         reviewerTop: sparql(levelQuery(REVIEW_DIM.key, { reviewer: true, stars: true })),
         matched: sparql(matchQuery()),
+        kinds: sparql(facetQuery({ kind: true }, [F('entityType')])),
         // Counted with the date filter itself skipped, so narrowing the range never
         // flattens the bars you are dragging over. Same rule as the hierarchy levels.
         dateHist: dateAxis.years.length
@@ -473,6 +531,12 @@ async function run() {
     await renderResults(done.results, done.nested, done.matched, blocks);
     await renderFacets(done);
     renderDateHistogram(done.dateHist);
+    await renderKinds(done.kinds);
+
+    // Say why the sidebar is empty rather than just leaving it empty.
+    const anyFacet = [...document.querySelectorAll('#panel-facets .facet-group')]
+        .some(n => n.offsetParent !== null);
+    el('facets-empty').hidden = anyFacet;
     await renderChips();
 }
 
@@ -530,7 +594,7 @@ async function renderResults(res, nested, matched, blocks) {
     // Every IRI on screen gets a label, resolved through the browser-cached label endpoint.
     const iris = new Set();
     for (const b of rows) {
-        ['course', 'country', 'region'].forEach(k => iris.add(val(b, k)));
+        ['course', 'country', 'region', 'type'].forEach(k => iris.add(val(b, k)));
         (val(b, 'diets') || '').split('|').filter(Boolean).forEach(v => iris.add(v));
         (val(b, 'people') || '').split('|').filter(Boolean).forEach(v => iris.add(v));
     }
@@ -558,7 +622,7 @@ async function renderResults(res, nested, matched, blocks) {
 
     const pages = Math.ceil(total / PAGE_SIZE);
     el('summary').textContent = total
-        ? `${total} recipe${total === 1 ? '' : 's'}${pages > 1 ? ` · page ${state.page + 1} of ${pages}` : ''}`
+        ? `${total} result${total === 1 ? '' : 's'}${pages > 1 ? ` · page ${state.page + 1} of ${pages}` : ''}`
         : '';
 
     if (!rows.length) {
@@ -580,19 +644,24 @@ async function renderResults(res, nested, matched, blocks) {
                 ? hits.map(h => `<span class="why-badge" title="${esc(h.value)}">${esc(L(h.field))}</span>`).join('')
                 : `<span class="why-badge none">filter only — no text match</span>`;
         const ttl = blocks?.get(entity);
+        const type = val(b, 'type');
+        // Only recipes carry these. Rather than branch on the class name, render whatever
+        // the entity actually has — which is also what keeps a third shape from needing a
+        // third code path.
+        const facts = [
+            val(b, 'course') && `<span class="badge k">${esc(L(val(b, 'course')))}</span>`,
+            val(b, 'region') && `<span class="badge k">${esc(L(val(b, 'region')))} › ${esc(L(val(b, 'country')))}</span>`,
+            ...diets.map(d => `<span class="badge">${esc(L(d))}</span>`),
+            ...people.map(p => `<span class="badge people">${esc(L(p))}</span>`),
+            val(b, 'prep') && `<span class="badge num">${esc(val(b, 'prep'))} min</span>`,
+            val(b, 'published') && `<span class="badge num">${esc(val(b, 'published'))}</span>`,
+        ].filter(Boolean).join('');
         return `<article class="card">
     <div class="card-main">
-      <h2>${esc(val(b, 'label'))}</h2>
-      <div class="code">${esc(val(b, 'code'))} · rank ${esc(val(b, 'rank'))} · score ${Number(val(b, 'score')).toFixed(4)}</div>
-      <p class="desc">${esc(val(b, 'desc'))}</p>
-      <div class="badges">
-        <span class="badge k">${esc(L(val(b, 'course')))}</span>
-        <span class="badge k">${esc(L(val(b, 'region')))} › ${esc(L(val(b, 'country')))}</span>
-        ${diets.map(d => `<span class="badge">${esc(L(d))}</span>`).join('')}
-        ${people.map(p => `<span class="badge people">${esc(L(p))}</span>`).join('')}
-        <span class="badge num">${esc(val(b, 'prep'))} min</span>
-        <span class="badge num">${esc(val(b, 'published'))}</span>
-      </div>
+      <h2>${esc(val(b, 'label'))} <span class="kind-tag">${esc(L(type))}</span></h2>
+      <div class="code">${val(b, 'code') ? esc(val(b, 'code')) + ' · ' : ''}rank ${esc(val(b, 'rank'))} · score ${Number(val(b, 'score')).toFixed(4)}</div>
+      <p class="desc">${esc(val(b, 'desc') || '')}</p>
+      <div class="badges">${facts}</div>
       ${recs.length ? `<div class="reviews"><h4>Matching reviews (from CSV, via luc:nestedMatch)</h4>
         ${recs.map(r => `<div class="review"><span class="stars">${'★'.repeat(Number(r.stars) || 0)}</span>
           ${esc(r.reviewer || '')} · ${esc(r.reviewMonth || '')}</div>`).join('')}</div>` : ''}
@@ -652,6 +721,8 @@ async function renderFacets(res) {
 
     // Reviewer lives in its own group next to the stars selector, because the two combine
     // into a single-child filter and belong together in the UI.
+    const reviewsGroup = el('group-reviews');
+    if (reviewsGroup) reviewsGroup.style.display = reviewerTop.length ? '' : 'none';
     el('facet-reviewer').innerHTML = renderTree(reviewerTop, reviewerKids, {
         parentKind: 'reviewer', childKind: 'stars-exact', openKind: 'open-reviewer',
         open: state.open.reviewer,
@@ -681,7 +752,7 @@ async function renderFacets(res) {
         html += `</div>`;
     }
 
-    if (ranges.length) {
+    if (ranges.length && ranges.some(r => r.count > 0)) {
         html += `<div class="facet-group"><h3>Prep time</h3><ul>` + ranges.map(r => {
             const label = r.low === null ? `under ${r.high} min`
                 : r.high === null ? `${r.low} min and over` : `${r.low}–${r.high} min`;
@@ -811,6 +882,7 @@ async function renderChips() {
     }
     if (state.region) add(F('region'), state.region, null, () => { state.region = null; state.country = null; });
     if (state.country) add(F('country'), state.country, null, () => { state.country = null; });
+    if (state.kind) add(F('entityType'), state.kind, null, () => { state.kind = null; });
     if (state.yearIdx) {
         const [lo, hi] = state.yearIdx;
         add(F('publishedOn'), null,
@@ -922,6 +994,8 @@ async function loadConfig() {
         // Trust the server's names for the hierarchy dimensions rather than assuming
         // "region_country" / "reviewer_stars": both are derived by joining idx:fieldName
         // values, which this client does not get to decide.
+        kinds.classes = [...new Set((ds.profiles || []).flatMap(p => p.targetClasses || []))];
+
         const hiers = ds.profiles?.[0]?.hierarchies || [];
         const byLevel = name => hiers.find(h => (h.levels || []).includes(name))?.dimension;
         const dim = byLevel('region');
@@ -958,7 +1032,10 @@ function wireChrome() {
     el('reset').onclick = () => {
         Object.assign(state, {
             q: '', mode: 'bm25', sort: '', page: 0, sel: {}, region: null, country: null,
-            yearIdx: null, minStars: '', reviewer: null, starsExact: null, prepBucket: null,
+            // null = both kinds. Only two shapes exist, so "both" is genuinely the absence of a
+    // filter rather than an "in" of every class.
+    kind: null,
+    yearIdx: null, minStars: '', reviewer: null, starsExact: null, prepBucket: null,
             open: { region: new Set(), reviewer: new Set() },
         });
         el('q').value = ''; el('mode').value = 'bm25'; el('sort').value = '';
