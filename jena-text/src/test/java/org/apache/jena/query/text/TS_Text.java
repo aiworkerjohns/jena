@@ -80,6 +80,8 @@ import org.apache.jena.query.text.changes.TestDatasetMonitor;
 
     // SHACL entity-per-document tests
     , TestShaclIndexMapping.class
+    , TestShaclConfigFingerprint.class
+    , TestShaclIndexStamp.class
     , TestShaclDocumentBuilding.class
     , TestShaclTextDocProducer.class
     , TestShaclNoPFDuringIndexing.class

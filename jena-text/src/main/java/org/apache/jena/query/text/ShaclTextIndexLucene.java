@@ -31,6 +31,7 @@ import org.apache.jena.geosparql.implementation.vocabulary.SRS_URI;
 import org.apache.jena.datatypes.RDFDatatype;
 import org.apache.jena.datatypes.xsd.XSDDatatype;
 import org.apache.jena.graph.Node;
+import org.apache.jena.sparql.core.DatasetGraph;
 import org.apache.jena.graph.NodeFactory;
 import org.apache.jena.query.text.assembler.IndexVocab;
 import org.apache.jena.query.text.cql.CqlExpression;
@@ -120,6 +121,18 @@ public class ShaclTextIndexLucene extends TextIndexLucene {
     private final List<String> facetFields;
     private final FacetsConfig facetsConfig;
     private final int maxFacetHits;
+
+    /** Fingerprint of the configuration this instance was built with. */
+    private final String configFingerprint;
+
+    /** The stamp found on disk when this index was opened, or null if there was none. */
+    private final ShaclIndexStamp.StampData openedStamp;
+
+    /**
+     * Whether this open created the stamp because the index was empty. Such an index may
+     * still adopt the identity of the dataset it is attached to; an existing one may not.
+     */
+    private boolean stampedAsNew = false;
 
     // Taxonomy directory for hierarchical facets (null if no hierarchies configured)
     private final Directory taxoDirectory;
@@ -272,9 +285,157 @@ public class ShaclTextIndexLucene extends TextIndexLucene {
             this.taxoWriter = null;
         }
 
+        this.configFingerprint =
+            ShaclConfigFingerprint.fingerprint(shaclMapping, config.isValueStored(), this.facetFields);
+        this.openedStamp = ShaclIndexStamp.read(directory);
+        stampIfNewIndex();
+        logConfigStatus();
+
         // The parent constructor opened (and committed) the IndexWriter before this point,
         // so an NRT SearcherManager rooted on it is safe to construct now.
         initSearcherManager();
+    }
+
+    /**
+     * Stamp an index that has no content yet, and only such an index.
+     * <p>
+     * Anything else would destroy the evidence. If a server opened a populated index with
+     * a different configuration and re-stamped it, the mismatch it is supposed to report
+     * would be overwritten by the very act of reporting it — and an index built before
+     * fingerprinting existed would acquire a stamp asserting a match that nothing has
+     * checked. A full rebuild re-stamps explicitly through {@link #stampConfig}.
+     */
+    private void stampIfNewIndex() {
+        if ( openedStamp != null )
+            return;
+        try {
+            if ( getIndexWriter().getDocStats().numDocs > 0 )
+                return;
+        } catch (Exception e) {
+            // Not being able to count documents is not a reason to fail opening an index.
+            return;
+        }
+        stampConfig(null);
+        stampedAsNew = true;
+    }
+
+    /**
+     * Tie this index to the dataset it is being attached to, or report that it is tied to
+     * a different one.
+     * <p>
+     * Called by the assembler, which is the first point at which the index and the dataset
+     * are both in hand — the constructor runs before they meet.
+     * <p>
+     * A freshly created index adopts the dataset's identity, minting one if the dataset
+     * has none. An index that already carries content does not: its pairing records the
+     * dataset its documents actually came from, and rewriting that would erase the only
+     * evidence of a crossed mount.
+     * <p>
+     * An identity is minted for the attached dataset only when the index carries a
+     * pairing to compare it against. Otherwise there is no verdict to reach and no reason
+     * to write into someone's database directory. The case this covers: an index built by
+     * the indexer from dataset A, mounted against a dataset B that was loaded with plain
+     * {@code tdbloader} and so has no identity of its own. Without minting here, B stays
+     * anonymous and the crossed mount is reported as unknown rather than as the error it
+     * is. A read-only mount simply yields null and falls back to unknown.
+     */
+    public void checkOrCompletePairing(DatasetGraph dsg) {
+        if ( stampedAsNew ) {
+            String datasetId = DatasetLocations.datasetInstanceId(dsg, true);
+            if ( datasetId != null ) {
+                stampConfig(datasetId);
+                log.info("New index paired with dataset {}", datasetId);
+            }
+            return;
+        }
+
+        boolean indexIsPaired = openedStamp != null && openedStamp.pairedDatasetId() != null;
+        String currentDatasetId = DatasetLocations.datasetInstanceId(dsg, indexIsPaired);
+        switch ( ShaclIndexStamp.comparePairing(openedStamp, currentDatasetId) ) {
+            case MATCH ->
+                log.info("Index is paired with the dataset it was built from ({})", currentDatasetId);
+            case MISMATCH -> {
+                log.warn("Index/dataset PAIRING MISMATCH - this index was not built from this dataset.");
+                log.warn("    index was built from dataset: {}", openedStamp.pairedDatasetId());
+                log.warn("    dataset attached here:        {}", currentDatasetId);
+                log.warn("    The configuration matches, so results will look plausible and be wrong.");
+                log.warn("    Check which index and database directories are mounted.");
+            }
+            case UNKNOWN -> {
+                // Silent. An unpaired index or an in-memory dataset is an ordinary
+                // configuration, and the config-status log above has already spoken.
+            }
+        }
+    }
+
+    /**
+     * Record this configuration as the one the index content was built from.
+     * <p>
+     * Called automatically for a new index, and explicitly by the rebuild path after the
+     * index has been repopulated. Lucene carries live commit data forward, so the stamp
+     * lands on the next commit and persists after that.
+     *
+     * @param pairedDatasetId identity of the dataset the content came from, or null when
+     *                        it is unknown; see {@link DatasetInstanceId}
+     */
+    public void stampConfig(String pairedDatasetId) {
+        ShaclIndexStamp.StampData stamp = new ShaclIndexStamp.StampData(
+            configFingerprint,
+            ShaclConfigFingerprint.FINGERPRINT_VERSION,
+            java.time.Instant.now().toString(),
+            org.apache.jena.atlas.lib.Version.versionForClass(ShaclTextIndexLucene.class).orElse("unknown"),
+            java.util.UUID.randomUUID().toString(),
+            pairedDatasetId);
+        ShaclIndexStamp.write(getIndexWriter(), stamp);
+    }
+
+    /**
+     * Report, once per index open, whether the index on disk was built from this
+     * configuration.
+     * <p>
+     * A match is logged as well as a mismatch. A check that says nothing when healthy is
+     * a check nobody trusts when it finally speaks, and "no warning" is indistinguishable
+     * from "the check never ran".
+     * <p>
+     * A mismatch warns rather than failing. An index built from an older configuration
+     * still answers correctly for every field that existed when it was built, so refusing
+     * to start would turn a degraded service into an outage.
+     */
+    private void logConfigStatus() {
+        switch ( getConfigStatus() ) {
+            case MATCH ->
+                log.info("Index configuration matches the index on disk ({})", configFingerprint);
+            case MISMATCH -> {
+                log.warn("Index configuration MISMATCH - the Lucene index was built from a different configuration.");
+                log.warn("    index was built from: {}  (at {})", openedStamp.fingerprint(), openedStamp.builtAt());
+                log.warn("    running config is:    {}", configFingerprint);
+                log.warn("    Fields, facets or hierarchies added since the index was built will return no results.");
+                log.warn("    Rebuild with: shacltextindexer --desc=<config>");
+            }
+            case UNKNOWN -> {
+                if ( openedStamp == null )
+                    log.info("Index configuration not verified: the index carries no configuration stamp "
+                             + "(built before stamping, or built elsewhere). Running config is {}", configFingerprint);
+                else
+                    log.info("Index configuration not verified: stamp uses fingerprint version {}, this build understands {}",
+                             openedStamp.version(), ShaclConfigFingerprint.FINGERPRINT_VERSION);
+            }
+        }
+    }
+
+    /** Fingerprint of the configuration this instance is running with. */
+    public String getConfigFingerprint() {
+        return configFingerprint;
+    }
+
+    /** The stamp present on disk when this index was opened, or null if there was none. */
+    public ShaclIndexStamp.StampData getOpenedStamp() {
+        return openedStamp;
+    }
+
+    /** Whether the index on disk was built from a shape-equivalent configuration. */
+    public ShaclIndexStamp.Status getConfigStatus() {
+        return ShaclIndexStamp.compare(openedStamp, configFingerprint);
     }
 
     /** (Re)initialise the {@link SearcherManager} against the current writer. */

@@ -89,9 +89,13 @@ public class TextDatasetAssembler extends DatasetAssembler implements Assembler 
         TextDocProducer textDocProducer = resolveDocProducer(a, textDocProducerNode, ds, textIndex);
 
         // In SHACL mode, auto-create ShaclTextDocProducer
-        if (textDocProducer == null && textIndex instanceof ShaclTextIndexLucene shaclIndex) {
-            textDocProducer = new ShaclTextDocProducer(
-                ds.asDatasetGraph(), textIndex, shaclIndex.getShaclMapping());
+        if (textIndex instanceof ShaclTextIndexLucene shaclIndex) {
+            // First point at which the index and its dataset are both in hand.
+            shaclIndex.checkOrCompletePairing(ds.asDatasetGraph());
+            if (textDocProducer == null) {
+                textDocProducer = new ShaclTextDocProducer(
+                    ds.asDatasetGraph(), textIndex, shaclIndex.getShaclMapping());
+            }
         }
 
         Dataset dst = TextDatasetFactory.create(ds, textIndex, true, textDocProducer);
@@ -144,6 +148,7 @@ public class TextDatasetAssembler extends DatasetAssembler implements Assembler 
 
             // Create doc producer for this index
             if (luceneIndex instanceof ShaclTextIndexLucene shaclIndex) {
+                shaclIndex.checkOrCompletePairing(ds.asDatasetGraph());
                 producers.add(new ShaclTextDocProducer(
                     ds.asDatasetGraph(), shaclIndex, shaclIndex.getShaclMapping()));
             } else {
