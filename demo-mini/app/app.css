@@ -202,7 +202,10 @@ table.res td { font-family: ui-monospace, monospace; font-size: .76rem; word-bre
 .error { color: var(--bad); background: #f9ecec; padding: .6rem .8rem; border-radius: 6px; font-size: .84rem; white-space: pre-wrap; }
 
 /* ── result card: content, plus the same record as it sits in the index ── */
-.card { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: .9rem; align-items: start; }
+/* Even split: the rendered record on the left, the same record as RDF on the right.
+   minmax(0, …) on both, or the <pre> refuses to shrink below its longest line and pushes
+   the text column over. */
+.card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .9rem; align-items: start; }
 @media (max-width: 1500px) {
   .card { grid-template-columns: minmax(0, 1fr); }
 }
