@@ -174,7 +174,7 @@ tasks:
       - |
         java --add-modules jdk.incubator.vector \
           -cp "../{{.FUSEKI_JAR}}:$(cat .embeddings-cp):../../jena-text-embeddings/target/classes" \
-          org.apache.jena.fuseki.main.cmds.FusekiMainCmd --port {{.FUSEKI_PORT}} --config config.ttl
+          org.apache.jena.fuseki.main.cmds.FusekiServerCmd --port {{.FUSEKI_PORT}} --config config.ttl
 
   clean:
     desc: Remove mining TDB2, Lucene and facet-taxonomy directories

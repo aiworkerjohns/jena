@@ -67,7 +67,9 @@ PREFIX schema:  <https://schema.org/>
     ##
     ## Changing provider or model means REINDEXING: Lucene fixes a KNN field's dimension
     ## at index time, and vectors from two different models are not comparable at all.
-    ## Remember to set idx:dimension to 384 for bge-small-en-v1.5.
+    ## For bge-small-en-v1.5, set idx:dimension 384 on field:embedding below. The
+    ## idx:dimension here is only read by providers that must be told their size
+    ## (hashing); Jlama reports its own from the loaded model.
     idx:embedding [
         idx:provider "hashing" ;
         idx:dimension 64 ;

@@ -68,8 +68,11 @@ Out of the box the demo uses the `hashing` provider, so `task serve` works with 
 downloads. **It compares words, not meaning** — it exists to demonstrate the query shape.
 "copper" and "cuprous ore" are as unrelated to it as "copper" and "Tuesday".
 
-For real semantic search, uncomment the `jlama` block in `test/config.ttl`, set
-`idx:dimension` to `384` on both `field:embedding` and the embedding block, then:
+For real semantic search, edit `test/config.ttl`: swap the `hashing` block for the `jlama`
+one, and set `idx:dimension` to `384` on **`field:embedding`** — that is the one Lucene
+fixes at index time. (The `idx:dimension` inside the `idx:embedding` block is only a hint
+for providers that need to be told their size, like `hashing`; Jlama reports its own from
+the loaded model.) Then:
 
 ```bash
 task index-jlama    # downloads ~130MB from HuggingFace into test/models on first run
