@@ -274,11 +274,21 @@ Fuseki-side code so far (every fuseki commit in history is an upstream `GH-nnnn`
 keeping it that way keeps the monthly upstream merge to its existing conflict set.
 
 ```
-GET /$/config          → JSON: [{ id, path, datasets: [...] }]
-GET /$/config/{id}     → text/turtle, the bytes from disk, with ETag
+GET /$/config                      → every source, content inlined (JSON)
+GET /$/config  Accept: text/turtle → the server configuration, as Turtle
+GET /$/config/{id}                 → one source's bytes (text/turtle, ETag)
+GET /$/config/{id}?view=effective  → what the server resolved (JSON)
 ```
 
-Serve the **bytes from disk**, not `builder.configModel()` — `readAssemblerFile` injects
+One request suffices. An earlier shape made a caller read a listing, pick an opaque id
+and come back for the content. That split bought nothing: the id is derived from the
+path, which the same response already shows, so it gates nothing; and once the bytes were
+captured at startup, the second call fetched something already in memory. The per-id path
+stays for addressing one file out of several. Turtle is served only when named in
+`Accept`, never by matching `*/*` — a browser sends `text/html,...,*/*` and must get the
+listing rather than a download.
+
+Serve the **captured bytes**, not `builder.configModel()` — `readAssemblerFile` injects
 `modelExtras` (`AssemblerUtils.java:141`), assembler-registration `rdfs:subClassOf`
 triples the user never wrote.
 

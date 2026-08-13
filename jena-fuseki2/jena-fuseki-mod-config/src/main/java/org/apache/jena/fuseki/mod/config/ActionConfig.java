@@ -41,10 +41,21 @@ import org.apache.jena.riot.WebContent;
  * Read-only browsing of the configuration a server is running.
  *
  * <pre>
- * GET /$/config                    list of configuration sources (JSON)
- * GET /$/config/{id}               the file's bytes (text/turtle)
- * GET /$/config/{id}?view=effective  what the server actually resolved (JSON)
+ * GET /$/config                        every source, content included (JSON)
+ * GET /$/config      Accept: text/turtle   the server's configuration, as Turtle
+ * GET /$/config/{id}                   one source's bytes (text/turtle)
+ * GET /$/config/{id}?view=effective    what the server actually resolved (JSON)
  * </pre>
+ *
+ * <h3>One request, not two</h3>
+ *
+ * The listing carries each source's content inline, and {@code Accept: text/turtle} on
+ * the collection returns the server configuration directly. An earlier shape made a
+ * caller read a listing, pick an opaque id and come back for the content. That split
+ * bought nothing: the id is derived from the path, which the same response already
+ * shows, so it is not a capability check; and since the bytes are now captured at
+ * startup rather than read per request, the second call fetches something already in
+ * memory. The per-id path remains for addressing one file out of several.
  *
  * <h3>Read-only, and why that is the whole design</h3>
  *
@@ -105,7 +116,10 @@ public class ActionConfig extends ActionCtl {
         String id = itemId(action);
         try {
             if ( id == null ) {
-                listSources(action, captured);
+                if ( wantsTurtle(action) )
+                    serveServerConfig(action, captured);
+                else
+                    listSources(action, captured);
                 return;
             }
             ConfigSources.Source source = ConfigSources.find(captured, id);
@@ -120,6 +134,38 @@ public class ActionConfig extends ActionCtl {
         } catch (IOException e) {
             ServletOps.errorOccurred(e);
         }
+    }
+
+    /**
+     * Whether the caller asked for Turtle rather than the JSON listing.
+     * <p>
+     * Deliberately a plain containment test, not full content negotiation: a browser
+     * sends {@code Accept: text/html,...,*&#47;*}, and any q-value parser worth the name
+     * would match the wildcard and hand it a Turtle download instead of the listing it
+     * expected. Turtle is served only when it is asked for by name.
+     */
+    private static boolean wantsTurtle(HttpAction action) {
+        String accept = action.getRequestHeader("Accept");
+        return accept != null
+            && (accept.contains(WebContent.contentTypeTurtle) || accept.contains("application/x-turtle"));
+    }
+
+    /**
+     * The server's own configuration, for a caller that just wants the file.
+     * <p>
+     * A {@code --config} file is the one holding the server and its services; a
+     * {@code configuration/} entry describes a single service. So "the configuration" is
+     * the server source when there is one.
+     */
+    private void serveServerConfig(HttpAction action, List<ConfigSources.Source> captured) throws IOException {
+        for ( ConfigSources.Source s : captured ) {
+            if ( "server".equals(s.kind()) && s.readable() ) {
+                serveRaw(action, s);
+                return;
+            }
+        }
+        ServletOps.errorNotFound("This server has no server configuration file"
+                                 + " (started from the command line or programmatically)");
     }
 
     /** The path segment after {@code /$/config}, or null for the container itself. */
@@ -145,8 +191,12 @@ public class ActionConfig extends ActionCtl {
                    // been edited since, say so rather than letting a reader assume the
                    // difference does not exist.
                    .pair("changedOnDisk", s.changedOnDisk())
-                   .pair("onDiskReadable", s.onDiskReadable())
-                   .finishObject();
+                   .pair("onDiskReadable", s.onDiskReadable());
+            // Inline, because a caller asking what configuration is running wants the
+            // configuration, and it is already in memory.
+            if ( s.readable() )
+                builder.pair("text", s.text());
+            builder.finishObject();
         }
         builder.finishArray();
         builder.finishObject();

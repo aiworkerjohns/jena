@@ -114,6 +114,58 @@ public class TestFModConfig {
     }
 
     /**
+     * One request is enough. The listing carries the content, so a caller does not have
+     * to read a listing, pick an id and come back for something already in memory.
+     */
+    @Test
+    public void theListingCarriesTheConfigurationItself(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+
+        JsonObject source = JSON.parse(get("http://localhost:" + server.getHttpPort() + "/$/config"))
+            .get("sources").getAsArray().get(0).getAsObject();
+        assertEquals(CONFIG, source.get("text").getAsString().value());
+    }
+
+    /** {@code Accept: text/turtle} on the collection returns the configuration directly. */
+    @Test
+    public void acceptTurtleOnTheCollectionReturnsTheConfig(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+
+        HttpResponse<String> r = HttpClient.newHttpClient().send(
+            HttpRequest.newBuilder(URI.create("http://localhost:" + server.getHttpPort() + "/$/config"))
+                .header("Accept", "text/turtle").GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(200, r.statusCode());
+        assertEquals(CONFIG, r.body());
+        assertTrue(r.headers().firstValue("Content-Type").orElse("").contains("text/turtle"));
+    }
+
+    /**
+     * A browser sends "text/html,...,*&#47;*". Matching the wildcard would hand it a
+     * Turtle download in place of the listing, so Turtle is served only when named.
+     */
+    @Test
+    public void aBrowserAcceptHeaderStillGetsTheJsonListing(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+
+        HttpResponse<String> r = HttpClient.newHttpClient().send(
+            HttpRequest.newBuilder(URI.create("http://localhost:" + server.getHttpPort() + "/$/config"))
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(200, r.statusCode());
+        assertNotNull(JSON.parse(r.body()).get("sources"), "a browser should get the listing");
+    }
+
+    /**
      * The bytes are served, not a re-serialisation of the parsed model. Comments and
      * prefix choices survive, and the assembler-registration triples that
      * {@code readAssemblerFile} injects into the model do not appear.
