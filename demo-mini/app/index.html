@@ -26,11 +26,9 @@
     <section id="panel-facets" class="panel">
       <div class="facet-group">
         <h3>Published</h3>
-        <div class="daterow">
-          <label>from <input type="date" id="date-from" min="2019-01-01" max="2026-12-31"></label>
-          <label>to <input type="date" id="date-to" min="2019-01-01" max="2026-12-31"></label>
-        </div>
-        <button class="linkish" id="date-clear">clear dates</button>
+        <p class="hint">A range facet on the <code>idx:TemporalField</code> — so you can see
+          where the data is before choosing a window.</p>
+        <div id="datehist" class="datehist"></div>
       </div>
 
       <div class="facet-group">

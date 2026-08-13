@@ -23,6 +23,9 @@ const PAGE_SIZE = 5;
 
 const labels = new LabelResolver(ENDPOINT, '1');
 
+/** Years covered by the data, discovered at startup — see loadDateAxis(). */
+const dateAxis = { years: [] };
+
 /**
  * Facet panels, in display order. `dimension` marks the hierarchical one.
  *
@@ -59,7 +62,9 @@ const state = {
     sel: {},            // fieldIRI -> Set of values (multi-select)
     region: null,       // hierarchy drill-down: the selected parent level
     country: null,
-    dateFrom: '', dateTo: '',
+    // null means "the whole span", which is not a filter at all. Otherwise [lo, hi] are
+    // indices into dateAxis.years, so the slider and the filter cannot disagree.
+    yearIdx: null,
     minStars: '', reviewer: null, starsExact: null,
     prepBucket: null,   // [low, high]
     // Which hierarchy nodes are OPEN, which is not the same as which are FILTERED.
@@ -128,12 +133,10 @@ function buildFilter(skip = {}, pin = {}) {
     if (region) clauses.push(eq(F('region'), region));
     if (country) clauses.push(eq(F('country'), country));
 
-    if (state.dateFrom && state.dateTo) {
-        clauses.push({ op: 'between', args: [prop(F('publishedOn')), state.dateFrom, state.dateTo] });
-    } else if (state.dateFrom) {
-        clauses.push({ op: '>=', args: [prop(F('publishedOn')), state.dateFrom] });
-    } else if (state.dateTo) {
-        clauses.push({ op: '<=', args: [prop(F('publishedOn')), state.dateTo] });
+    if (state.yearIdx && !skip.date) {
+        const [lo, hi] = state.yearIdx;
+        clauses.push({ op: 'between', args: [prop(F('publishedOn')),
+            `${dateAxis.years[lo]}-01-01`, `${dateAxis.years[hi]}-12-31`] });
     }
 
     if (state.prepBucket) {
@@ -328,6 +331,90 @@ WHERE {
 }`;
 }
 
+/* ── the published-date histogram ──────────────────────────────────────── */
+
+/** Bucket edges, one per year plus a closing edge. */
+function yearBoundaries() {
+    return [...dateAxis.years.map(y => `${y}-01-01`), `${dateAxis.years.at(-1) + 1}-01-01`];
+}
+
+/**
+ * Learn which years the data covers, so the axis is the data's rather than a guess.
+ * Read from the graph, once, at startup — the range facet needs its bucket edges before
+ * it can be asked for anything.
+ */
+async function loadDateAxis() {
+    try {
+        const res = await sparql(`PREFIX kt: <${KT}>
+SELECT (MIN(?d) AS ?from) (MAX(?d) AS ?to) WHERE { ?s kt:publishedOn ?d }`);
+        const b = res.results.bindings[0];
+        const from = Number(b?.from?.value?.slice(0, 4));
+        const to = Number(b?.to?.value?.slice(0, 4));
+        if (!from || !to || to < from) return;
+        dateAxis.years = Array.from({ length: to - from + 1 }, (_, i) => from + i);
+    } catch {
+        // A missing histogram is a missing control, not a broken page.
+    }
+}
+
+/**
+ * A range facet drawn as bars, with a two-handle slider over it.
+ *
+ * The point of the bars is that you can see where the data is before choosing a range —
+ * a plain pair of date inputs lets you pick an empty window and gives no clue why.
+ */
+function renderDateHistogram(res) {
+    const node = el('datehist');
+    if (!node) return;
+    if (!dateAxis.years.length) { node.innerHTML = ''; return; }
+
+    const counts = new Map();
+    for (const b of bindings(res || { results: { bindings: [] } })) {
+        const year = Number(val(b, 'low')?.slice(0, 4));
+        if (!Number.isNaN(year)) counts.set(year, Number(val(b, 'count')));
+    }
+    const peak = Math.max(1, ...counts.values());
+    const last = dateAxis.years.length - 1;
+    const [lo, hi] = state.yearIdx || [0, last];
+
+    const bars = dateAxis.years.map((y, i) => {
+        const n = counts.get(y) || 0;
+        const inRange = i >= lo && i <= hi;
+        // A zero-count year still gets a sliver, so the axis stays evenly spaced and a gap
+        // in the data reads as a gap rather than as a missing bar.
+        const h = n ? Math.max(12, Math.round((n / peak) * 100)) : 3;
+        return `<div class="bar ${inRange ? 'on' : 'off'}" style="height:${h}%"
+                     title="${y}: ${n} recipe${n === 1 ? '' : 's'}"><span>${n || ''}</span></div>`;
+    }).join('');
+
+    node.innerHTML = `
+      <div class="bars">${bars}</div>
+      <div class="rangewrap">
+        <input type="range" id="year-lo" min="0" max="${last}" value="${lo}" step="1" aria-label="earliest year">
+        <input type="range" id="year-hi" min="0" max="${last}" value="${hi}" step="1" aria-label="latest year">
+      </div>
+      <div class="axis"><span>${dateAxis.years[lo]}</span>
+        ${state.yearIdx ? `<button class="linkish" id="year-clear">clear</button>` : `<span class="muted">all years</span>`}
+        <span>${dateAxis.years[hi]}</span></div>`;
+
+    let timer;
+    const onSlide = () => {
+        let a = Number(el('year-lo').value);
+        let b2 = Number(el('year-hi').value);
+        if (a > b2) [a, b2] = [b2, a];      // handles crossed: treat it as a span, not an error
+        state.yearIdx = (a === 0 && b2 === last) ? null : [a, b2];
+        state.page = 0;
+        // Repaint the bars immediately so dragging feels attached to something, but debounce
+        // the six requests a redraw costs.
+        renderDateHistogram(res);
+        clearTimeout(timer);
+        timer = setTimeout(run, 250);
+    };
+    el('year-lo').oninput = onSlide;
+    el('year-hi').oninput = onSlide;
+    if (el('year-clear')) el('year-clear').onclick = () => { state.yearIdx = null; state.page = 0; run(); };
+}
+
 /* ── run and render ────────────────────────────────────────────────────── */
 
 let seq = 0;
@@ -352,6 +439,11 @@ async function run() {
         regionTop: sparql(levelQuery(FACETS[0].key, { region: true, country: true })),
         reviewerTop: sparql(levelQuery(REVIEW_DIM.key, { reviewer: true, stars: true })),
         matched: sparql(matchQuery()),
+        // Counted with the date filter itself skipped, so narrowing the range never
+        // flattens the bars you are dragging over. Same rule as the hierarchy levels.
+        dateHist: dateAxis.years.length
+            ? sparql(facetQuery({ date: true }, [{ field: F('publishedOn'), ranges: yearBoundaries() }]))
+            : null,
         nested: reviewFilterActive ? sparql(nestedQuery()) : null,
         // One Turtle fetch serves both the right-hand panel and the per-card columns, and
         // never rejects: the explanation must not be able to take the results down.
@@ -380,6 +472,7 @@ async function run() {
     const blocks = turtleBlocks(done.records);
     await renderResults(done.results, done.nested, done.matched, blocks);
     await renderFacets(done);
+    renderDateHistogram(done.dateHist);
     await renderChips();
 }
 
@@ -718,8 +811,12 @@ async function renderChips() {
     }
     if (state.region) add(F('region'), state.region, null, () => { state.region = null; state.country = null; });
     if (state.country) add(F('country'), state.country, null, () => { state.country = null; });
-    if (state.dateFrom) add(F('publishedOn'), null, `from ${state.dateFrom}`, () => { state.dateFrom = ''; el('date-from').value = ''; });
-    if (state.dateTo) add(F('publishedOn'), null, `to ${state.dateTo}`, () => { state.dateTo = ''; el('date-to').value = ''; });
+    if (state.yearIdx) {
+        const [lo, hi] = state.yearIdx;
+        add(F('publishedOn'), null,
+            lo === hi ? `${dateAxis.years[lo]}` : `${dateAxis.years[lo]}–${dateAxis.years[hi]}`,
+            () => { state.yearIdx = null; });
+    }
     if (state.reviewer) add(F('reviewer'), null, state.reviewer, () => { state.reviewer = null; state.starsExact = null; });
     if (state.starsExact !== null) add(F('stars'), null, '★'.repeat(state.starsExact), () => { state.starsExact = null; });
     else if (state.minStars) add(F('stars'), null, `${state.minStars} or more`, () => { state.minStars = ''; el('min-stars').value = ''; });
@@ -858,20 +955,14 @@ function wireChrome() {
     el('mode').onchange = ev => { state.mode = ev.target.value; state.page = 0; run(); };
     el('sort').onchange = ev => { state.sort = ev.target.value; state.page = 0; run(); };
     el('min-stars').onchange = ev => { state.minStars = ev.target.value; state.page = 0; run(); };
-    el('date-from').onchange = ev => { state.dateFrom = ev.target.value; state.page = 0; run(); };
-    el('date-to').onchange = ev => { state.dateTo = ev.target.value; state.page = 0; run(); };
-    el('date-clear').onclick = () => {
-        state.dateFrom = state.dateTo = ''; el('date-from').value = ''; el('date-to').value = '';
-        state.page = 0; run();
-    };
     el('reset').onclick = () => {
         Object.assign(state, {
             q: '', mode: 'bm25', sort: '', page: 0, sel: {}, region: null, country: null,
-            dateFrom: '', dateTo: '', minStars: '', reviewer: null, starsExact: null, prepBucket: null,
+            yearIdx: null, minStars: '', reviewer: null, starsExact: null, prepBucket: null,
             open: { region: new Set(), reviewer: new Set() },
         });
         el('q').value = ''; el('mode').value = 'bm25'; el('sort').value = '';
-        el('min-stars').value = ''; el('date-from').value = ''; el('date-to').value = '';
+        el('min-stars').value = '';
         run();
     };
 }
@@ -879,6 +970,6 @@ function wireChrome() {
 (async function main() {
     wireChrome();
     renderTestList();
-    await loadConfig();
+    await Promise.all([loadConfig(), loadDateAxis()]);
     run();
 })();

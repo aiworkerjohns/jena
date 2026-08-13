@@ -50,7 +50,7 @@ access.
 | # | Feature | Config | Query | In the app |
 |---|---|---|---|---|
 | 1 | Faceting | `idx:facetable` | `02`, `03` | left panel, counts update per filter |
-| 2 | Date range slicing | `idx:TemporalField` | `06` | "Published" from/to |
+| 2 | Date range slicing | `idx:TemporalField` | `06`, `07` | "Published" histogram slider |
 | 3a | TEXT / BM25 | `idx:TextField`, no analyzer | `01` | Keyword mode |
 | 3b | KEYWORD on IRIs | `idx:KeywordField` | `10` | every facet checkbox |
 | 3c | Edge n-gram | `text:EdgeNGramAnalyzer` + `text:tokenized` | `08` | Code typeahead mode |
@@ -60,6 +60,32 @@ access.
 | 6 | Match projection | `idx:stored` | `11`, `12` | Index view panel, and matched reviews on each card |
 | 7 | External CSV | `idx:externalSource` | `12`, `13`, `17` | Reviews panel |
 | 8 | Vector search | `idx:VectorField` | `15`, `16` | Semantic mode |
+
+## The date histogram
+
+"Published" is a two-handle slider over a bar per year, and the bars are a **range facet on
+the `idx:TemporalField`** — the same `luc:facet` call as the "Prep time" buckets, with date
+boundaries instead of integers:
+
+```json
+[{"field":"urn:jena:lucene:field#publishedOn",
+  "ranges":["2019-01-01","2020-01-01","2021-01-01","2022-01-01","2023-01-01","2024-01-01","2025-01-01"]}]
+```
+
+The point is that you can see where the data is before choosing a window; a pair of date
+inputs lets you pick an empty range and gives no clue why it was empty. Dragging compiles to
+one `between` on the same field that query `06` uses by hand.
+
+Three details that matter:
+
+- **The bars are counted with the date filter excluded**, so dragging never flattens the
+  thing you are dragging over. Same rule as the hierarchy levels.
+- **They do still reflect every other filter.** Search for "chilli" and the histogram drops
+  to 2020 and 2022, which is where those two recipes are — so it answers "when is what I am
+  looking at from", not just "when is everything from".
+- **The axis is the data's**, discovered at startup from `MIN`/`MAX` of `kt:publishedOn`
+  rather than hardcoded, and a year with no data keeps its slot as a sliver so a gap reads
+  as a gap.
 
 ## Opening a facet is not the same as filtering by it
 

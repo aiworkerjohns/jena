@@ -238,3 +238,53 @@ table.res td { font-family: ui-monospace, monospace; font-size: .76rem; word-bre
   font-size: .66rem; text-transform: uppercase; letter-spacing: .04em;
   opacity: .7; margin-right: .3rem;
 }
+
+/* ── published-date histogram with a two-handle range slider ── */
+.datehist { margin-top: .2rem; }
+
+.datehist .bars {
+  display: flex; align-items: flex-end; gap: 2px;
+  height: 54px; padding: 0 2px;
+}
+.datehist .bar {
+  flex: 1; border-radius: 2px 2px 0 0; position: relative;
+  background: var(--accent); opacity: .75; transition: opacity .12s, background .12s;
+  min-height: 3px; cursor: default;
+}
+.datehist .bar.off { background: var(--line); opacity: 1; }
+.datehist .bar span {
+  position: absolute; top: -13px; left: 0; right: 0; text-align: center;
+  font-size: .6rem; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Two native range inputs stacked on one track. The wrapper is the visible track; each
+ * input is transparent and only its thumb takes pointer events, which is what lets both
+ * handles be grabbed even where they overlap.
+ */
+.datehist .rangewrap { position: relative; height: 20px; margin-top: 2px; }
+.datehist .rangewrap::before {
+  content: ''; position: absolute; left: 2px; right: 2px; top: 9px; height: 2px;
+  background: var(--line); border-radius: 2px;
+}
+.datehist input[type=range] {
+  position: absolute; left: 0; width: 100%; margin: 0; top: 0; height: 20px;
+  -webkit-appearance: none; appearance: none; background: none; pointer-events: none;
+}
+.datehist input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; pointer-events: auto; cursor: grab;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--panel); border: 2px solid var(--accent);
+}
+.datehist input[type=range]::-moz-range-thumb {
+  pointer-events: auto; cursor: grab;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--panel); border: 2px solid var(--accent);
+}
+.datehist input[type=range]::-moz-range-track { background: none; }
+
+.datehist .axis {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: .72rem; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.datehist .axis .muted { opacity: .55; }
