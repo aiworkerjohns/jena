@@ -134,7 +134,9 @@ async function sparql(query) {
 /* ── the CQL2-JSON filter, built from the whole UI state ───────────────── */
 
 /**
- * @param skip clause names to leave out — "region", "country", "reviewer", "stars".
+ * @param skip  clause groups to leave out: a dimension id ("region", "review"), or
+ *              "kind" / "date".
+ * @param pin   dimension id -> path to force, replacing whatever is selected.
  *
  * A facet must not be counted under its own filter, or drilling into a value hides every
  * sibling and the value itself. Asking for the region level with the region clause omitted
@@ -148,9 +150,6 @@ function buildFilter(skip = {}, pin = {}) {
     for (const [field, values] of Object.entries(state.sel)) {
         if (values.size) clauses.push(anyOf(field, [...values]));
     }
-
-    // A "=" on a hierarchy level both narrows the results AND tells luc:facet to return
-    // that level's children. One clause, both jobs — there is no drill-down argument.
 
     if (state.kind && !skip.kind) clauses.push(eq(F('entityType'), state.kind));
 
@@ -208,7 +207,10 @@ function queryString() {
 function sortSpec() {
     if (!state.sort) return '';
     const [field, order] = state.sort.split(':');
-    return JSON.stringify({ field: F(field), order });
+    // Every sortable field belongs to the recipe shape, so a reviewer has no value for it.
+    // Without "missing", Lucene's own default puts those first and a sort by prep time
+    // opens with six things that do not have one.
+    return JSON.stringify({ field: F(field), order, missing: 'last' });
 }
 
 const lit = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
@@ -234,35 +236,38 @@ function argsFor(kind, skip = {}, facetFields = null, pin = {}) {
 
 /* ── queries ───────────────────────────────────────────────────────────── */
 
+/**
+ * Everything each hit says about itself, one row per triple.
+ *
+ * This is the DESCRIBE-shaped projection rather than a column per property, which is what
+ * removes the pile of OPTIONALs: a reviewer is not a recipe with null columns, it simply
+ * has fewer triples. Adding a third shape needs no change here at all.
+ *
+ * Not a literal DESCRIBE only because that returns a graph, and turning a graph into
+ * something renderable needs an RDF parser in the browser — for no gain, since the card's
+ * RDF column already shows the real thing (see recordQuery). Grouping ?p/?o by subject is
+ * the same information in a form the client already handles.
+ */
 function searchQuery() {
-    return `PREFIX luc:    <urn:jena:lucene:index#>
-PREFIX rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
-PREFIX dct:    <http://purl.org/dc/terms/>
-PREFIX schema: <https://schema.org/>
-PREFIX kt:     <${KT}>
+    return `PREFIX luc: <urn:jena:lucene:index#>
+PREFIX kt:  <${KT}>
 
-SELECT ?entity ?type ?rank ?totalHits ?score ?label ?desc ?code ?course ?country ?region ?prep ?published
-       (GROUP_CONCAT(DISTINCT STR(?diet);   SEPARATOR="|") AS ?diets)
-       (GROUP_CONCAT(DISTINCT STR(?person); SEPARATOR="|") AS ?people)
+SELECT ?entity ?rank ?totalHits ?score ?p ?o
 WHERE {
     (?hit ?entity ?score ?totalHits ?rank) luc:query (${argsFor('query')}) .
-    ?entity a ?type .
-    # The same fan-in the index does, on the SPARQL side: a name may arrive by any of three
-    # predicates, and this alternative path is the display-time equivalent of the three
-    # sh:property occurrences that feed field:name.
-    ?entity rdfs:label|schema:name|dct:title ?label .
-    OPTIONAL { ?entity dct:description ?desc }
-    # Everything below belongs to recipes only. A reviewer simply has none of it, which is
-    # what makes these OPTIONAL rather than a second query per shape.
-    OPTIONAL { ?entity kt:code ?code }
-    OPTIONAL { ?entity kt:course ?course }
-    OPTIONAL { ?entity kt:country ?country . ?country kt:inRegion ?region }
-    OPTIONAL { ?entity kt:prepMinutes ?prep }
-    OPTIONAL { ?entity kt:publishedOn ?published }
-    OPTIONAL { ?entity kt:diet ?diet }
-    OPTIONAL { ?entity kt:author|kt:testedBy ?person }
+    {
+        ?entity ?p ?o
+    }
+    UNION
+    {
+        # The one value on a card that is not a triple on the entity. A recipe's region is
+        # one hop off its country — exactly how the index reaches it, with the sequence
+        # path ( kt:country kt:inRegion ) — so it is fetched the same way and labelled with
+        # the predicate that derives it.
+        ?entity kt:country/kt:inRegion ?o .
+        BIND(kt:inRegion AS ?p)
+    }
 }
-GROUP BY ?entity ?type ?rank ?totalHits ?score ?label ?desc ?code ?course ?country ?region ?prep ?published
 ORDER BY ?rank`;
 }
 
@@ -651,17 +656,58 @@ function renderTurtlePanel(text) {
 function bindings(res) { return res.results.bindings; }
 const val = (b, k) => b[k]?.value;
 
+const RDFS = 'http://www.w3.org/2000/01/rdf-schema#';
+const DCT = 'http://purl.org/dc/terms/';
+const SDO = 'https://schema.org/';
+const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+
+/** Which predicates a card reads, and in what preference order for the name. */
+const NAME_PREDICATES = [RDFS + 'label', SDO + 'name', DCT + 'title'];
+
+/**
+ * Fold the one-row-per-triple result into one object per hit.
+ *
+ * `props` is predicate -> array of values, so a card asks for what it wants and gets
+ * nothing when the entity has nothing — which is how a reviewer and a recipe go through
+ * the same renderer without either knowing about the other.
+ */
+function foldHits(rows) {
+    const hits = new Map();
+    for (const b of rows) {
+        const iri = val(b, 'entity');
+        let hit = hits.get(iri);
+        if (!hit) {
+            hit = { iri, rank: Number(val(b, 'rank')), score: Number(val(b, 'score')),
+                    totalHits: Number(val(b, 'totalHits')), props: new Map() };
+            hits.set(iri, hit);
+        }
+        const p = val(b, 'p');
+        if (!p) continue;
+        if (!hit.props.has(p)) hit.props.set(p, []);
+        hit.props.get(p).push(val(b, 'o'));
+    }
+    return [...hits.values()].sort((a, b) => a.rank - b.rank);
+}
+
 async function renderResults(res, reviews, matched, blocks) {
-    const rows = bindings(res);
-    const total = rows.length ? Number(val(rows[0], 'totalHits')) : 0;
+    const hits = foldHits(bindings(res));
+    const total = hits.length ? hits[0].totalHits : 0;
+
+    const one = (hit, p) => hit.props.get(p)?.[0];
+    const all = (hit, p) => hit.props.get(p) || [];
+    const nameOf = hit => NAME_PREDICATES.map(p => one(hit, p)).find(Boolean) || hit.iri;
+    const peopleOf = hit => [...all(hit, KT + 'author'), ...all(hit, KT + 'testedBy')];
 
     // Every IRI on screen gets a label, resolved through the browser-cached label endpoint.
     const iris = new Set();
-    for (const b of rows) {
-        ['course', 'country', 'region', 'type'].forEach(k => iris.add(val(b, k)));
-        (val(b, 'diets') || '').split('|').filter(Boolean).forEach(v => iris.add(v));
-        (val(b, 'people') || '').split('|').filter(Boolean).forEach(v => iris.add(v));
+    for (const hit of hits) {
+        [RDF + 'type', KT + 'course', KT + 'country', KT + 'inRegion'].forEach(p => {
+            all(hit, p).forEach(v => iris.add(v));
+        });
+        all(hit, KT + 'diet').forEach(v => iris.add(v));
+        peopleOf(hit).forEach(v => iris.add(v));
     }
+
     // Field IRIs get labels too, so "matched on" reads "Summary" rather than a CURIE.
     const byMatch = new Map();
     for (const b of bindings(matched || { results: { bindings: [] } })) {
@@ -674,8 +720,8 @@ async function renderResults(res, reviews, matched, blocks) {
     const lab = await labels.resolveMany([...iris]);
     const L = iri => lab.get(iri) || shortIri(iri);
 
-    // Which reviews the current filter picked out, so the ones that made the recipe match
-    // can be marked. The index decided WHICH recipes; this decides which rows to highlight.
+    // Which review rows the current filter picked out, so the ones that made the recipe
+    // match can be marked. The index decided WHICH recipes; this decides which to highlight.
     const { path, depth } = state.drill.review;
     const wantsReviewer = depth > 0 ? path[0] : null;
     const wantsStars = depth > 1 ? Number(path[1]) : null;
@@ -693,42 +739,36 @@ async function renderResults(res, reviews, matched, blocks) {
         ? `${total} result${total === 1 ? '' : 's'}${pages > 1 ? ` · page ${state.page + 1} of ${pages}` : ''}`
         : '';
 
-    if (!rows.length) {
+    if (!hits.length) {
         el('results').innerHTML = `<div class="empty">Nothing matched.</div>`;
         el('pager').innerHTML = '';
         return;
     }
 
-    el('results').innerHTML = rows.map(b => {
-        const entity = val(b, 'entity');
-        const diets = (val(b, 'diets') || '').split('|').filter(Boolean);
-        const people = (val(b, 'people') || '').split('|').filter(Boolean);
-        const recs = reviews.get(entity) || [];
-        const hits = byMatch.get(entity) || [];
-        // A vector hit has no matched field: proximity is the whole explanation.
+    el('results').innerHTML = hits.map(hit => {
+        const recs = reviews.get(hit.iri) || [];
+        const found = byMatch.get(hit.iri) || [];
         const why = state.mode === 'semantic'
-            ? `<span class="why-badge vec">nearest neighbour · cosine ${Number(val(b, 'score')).toFixed(3)}</span>`
-            : hits.length
-                ? hits.map(h => `<span class="why-badge" title="${esc(h.value)}">${esc(L(h.field))}</span>`).join('')
+            ? `<span class="why-badge vec">nearest neighbour · cosine ${hit.score.toFixed(3)}</span>`
+            : found.length
+                ? found.map(h => `<span class="why-badge" title="${esc(h.value)}">${esc(L(h.field))}</span>`).join('')
                 : `<span class="why-badge none">filter only — no text match</span>`;
-        const ttl = blocks?.get(entity);
-        const type = val(b, 'type');
-        // Only recipes carry these. Rather than branch on the class name, render whatever
-        // the entity actually has — which is also what keeps a third shape from needing a
-        // third code path.
+        const country = one(hit, KT + 'country');
+        const region = one(hit, KT + 'inRegion');
         const facts = [
-            val(b, 'course') && `<span class="badge k">${esc(L(val(b, 'course')))}</span>`,
-            val(b, 'region') && `<span class="badge k">${esc(L(val(b, 'region')))} › ${esc(L(val(b, 'country')))}</span>`,
-            ...diets.map(d => `<span class="badge">${esc(L(d))}</span>`),
-            ...people.map(p => `<span class="badge people">${esc(L(p))}</span>`),
-            val(b, 'prep') && `<span class="badge num">${esc(val(b, 'prep'))} min</span>`,
-            val(b, 'published') && `<span class="badge num">${esc(val(b, 'published'))}</span>`,
+            one(hit, KT + 'course') && `<span class="badge k">${esc(L(one(hit, KT + 'course')))}</span>`,
+            country && `<span class="badge k">${region ? esc(L(region)) + ' › ' : ''}${esc(L(country))}</span>`,
+            ...all(hit, KT + 'diet').map(d => `<span class="badge">${esc(L(d))}</span>`),
+            ...peopleOf(hit).map(x => `<span class="badge people">${esc(L(x))}</span>`),
+            one(hit, KT + 'prepMinutes') && `<span class="badge num">${esc(one(hit, KT + 'prepMinutes'))} min</span>`,
+            one(hit, KT + 'publishedOn') && `<span class="badge num">${esc(one(hit, KT + 'publishedOn'))}</span>`,
         ].filter(Boolean).join('');
+        const code = one(hit, KT + 'code');
         return `<article class="card">
     <div class="card-main">
-      <h2>${esc(val(b, 'label'))} <span class="kind-tag">${esc(L(type))}</span></h2>
-      <div class="code">${val(b, 'code') ? esc(val(b, 'code')) + ' · ' : ''}rank ${esc(val(b, 'rank'))} · score ${Number(val(b, 'score')).toFixed(4)}</div>
-      <p class="desc">${esc(val(b, 'desc') || '')}</p>
+      <h2>${esc(nameOf(hit))} <span class="kind-tag">${esc(L(one(hit, RDF + 'type')))}</span></h2>
+      <div class="code">${code ? esc(code) + ' · ' : ''}rank ${hit.rank} · score ${hit.score.toFixed(4)}</div>
+      <p class="desc">${esc(one(hit, DCT + 'description') || '')}</p>
       <div class="badges">${facts}</div>
       ${recs.length ? `<div class="reviews">
         <h4>Reviews <span class="tag csv">read from reviews.csv, not the index</span></h4>
@@ -738,7 +778,7 @@ async function renderResults(res, reviews, matched, blocks) {
     </div>
     <div class="card-ttl">
       <h4>the record in the graph</h4>
-      <pre class="ttl">${esc(ttl || '# no triples')}</pre>
+      <pre class="ttl">${esc(blocks?.get(hit.iri) || '# no triples')}</pre>
     </div>
   </article>`;
     }).join('');
