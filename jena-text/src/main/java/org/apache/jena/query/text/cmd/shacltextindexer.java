@@ -165,6 +165,14 @@ public class shacltextindexer extends CmdARQ {
                 indexer.index();
                 totalEntities += indexer.getEntityCount();
 
+                // Record the configuration this content was built from, and which dataset
+                // it came from, before closing. A rebuild is the one sanctioned point at
+                // which an existing stamp may be replaced.
+                String datasetId = DatasetLocations.datasetInstanceId(dataset, true);
+                shaclIdx.stampConfig(datasetId);
+                log.info("  Index '{}' stamped: config {}{}", id, shaclIdx.getConfigFingerprint(),
+                    datasetId == null ? "" : ", dataset " + datasetId);
+
                 shaclIdx.close();
                 log.info("  Index '{}' complete: {} entities", id, indexer.getEntityCount());
             }
