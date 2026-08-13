@@ -119,6 +119,39 @@ Three details that matter:
   rather than hardcoded, and a year with no data keeps its slot as a sliver so a gap reads
   as a gap.
 
+## The URL is the query
+
+Every view is a shareable link, and what it carries is the **compiled arguments** rather
+than the widget states:
+
+```
+?q=beef
+&mode=semantic
+&filter={"op":"and","args":[{"op":"=","args":[{"property":"…#course"},"…course-main"]}, …]}
+&sort={"field":"…#prepMinutes","order":"asc","missing":"last"}
+&facet=["region_country","reviewer_stars_reviewMonth","…#course", …]
+&page=1
+```
+
+`filter`, `sort` and `facet` are byte-for-byte the `cqlFilter`, `sortSpec` and `facetFields`
+that go to `luc:query` and `luc:facet`. So a link is also a readable statement of the
+question, and the three can be pasted straight into a SPARQL call.
+
+`filter` is parsed back into widget state on load — the drill paths, the ticked boxes, the
+year slider, the kind toggle. That works because the app generates the filter and knows its
+shape; it is **not** a general CQL2 reader. Anything it does not recognise is ignored rather
+than guessed at, so a hand-edited filter still runs correctly even where the sidebar cannot
+show why.
+
+`facet` is written but not read back: which facets to request follows from the index
+configuration, not from anything the user chose, so it is recomputed on load. It is in the
+URL because it is part of the question. It is also omitted entirely from the bare landing
+page, where it would be 300 characters of noise.
+
+One thing deliberately **not** in the URL: which facet nodes are merely *open*. Expanding is
+not filtering and does not change the results, so it is not part of the view worth sharing;
+a restored link expands whatever the filter drilled into.
+
 ## Opening a facet is not the same as filtering by it
 
 Each drillable value has a **twisty** beside its checkbox, and the two are independent:

@@ -216,22 +216,31 @@ function sortSpec() {
 const lit = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
 /** The 7 luc:query / luc:facet arguments shared by every request in this view. */
-function argsFor(kind, skip = {}, facetFields = null, pin = {}) {
+function argsFor(kind, skip = {}, fields = null, pin = {}) {
     const fs = fieldSpec();
     const spec = fs === 'default' ? '"default"' : `'${fs}'`;
     const q = lit(queryString());
     const filter = buildFilter(skip, pin);
     const f = filter ? `'${filter}'` : '""';
     if (kind === 'facet') {
-        const fields = JSON.stringify(facetFields || [
-            ...FACETS.filter(x => !x.dimension).map(x => x.key),
-            { field: F('prepMinutes'), ranges: PREP_RANGES },
-        ]);
-        return `"default" ${spec} ${q} '${fields}' ${f} 50 0`;
+        const list = fields ? JSON.stringify(fields) : facetFields();
+        return `"default" ${spec} ${q} '${list}' ${f} 50 0`;
     }
     const sort = sortSpec();
     const s = sort ? `'${sort}'` : '""';
     return `"default" ${spec} ${q} ${f} ${s} ${PAGE_SIZE} ${state.page * PAGE_SIZE}`;
+}
+
+/**
+ * The facet-field list the sidebar asks for. One definition, used by the query and by the
+ * URL, so the ?facet= a link carries is the list that was actually requested.
+ */
+function facetFields() {
+    return JSON.stringify([
+        ...Object.values(DIMS).map(d => d.key),
+        ...FACETS.map(x => x.key),
+        { field: F('prepMinutes'), ranges: PREP_RANGES },
+    ]);
 }
 
 /* ── queries ───────────────────────────────────────────────────────────── */
@@ -542,6 +551,124 @@ function renderDateHistogram(res) {
     if (el('year-clear')) el('year-clear').onclick = () => { state.yearIdx = null; state.page = 0; run(); };
 }
 
+/* ── the URL is the query ──────────────────────────────────────────────── */
+
+/*
+ * The address bar carries the compiled arguments, not the widget states:
+ *
+ *   ?q= &mode= &filter= &sort= &facet= &page=
+ *
+ * `filter`, `sort` and `facet` are the exact CQL2-JSON, sort spec and facet-field list
+ * that go to luc:query and luc:facet — so a shared link is also a readable statement of
+ * what was asked, and the three can be pasted straight into a SPARQL call.
+ *
+ * `filter` is parsed back into widget state on load. That works because this app generates
+ * the filter and knows its shape; it is not a general CQL2 reader. Anything it does not
+ * recognise is ignored rather than guessed at, so a hand-edited filter still runs — the
+ * results will be right even where the sidebar cannot show why.
+ *
+ * `facet` is written but not read back: which facets to request follows from the index
+ * configuration rather than from anything the user chose, so it is recomputed at load. It
+ * is in the URL because it is part of the question being asked.
+ */
+function syncUrl() {
+    const params = new URLSearchParams();
+    if (state.q.trim()) params.set('q', state.q.trim());
+    if (state.mode !== 'bm25') params.set('mode', state.mode);
+    const filter = buildFilter();
+    if (filter) params.set('filter', filter);
+    const sort = sortSpec();
+    if (sort) params.set('sort', sort);
+    if (state.page) params.set('page', String(state.page));
+    // Only once there is something to share. The facet list is the same on every view, so
+    // emitting it on the bare landing page is 300 characters of noise in the address bar.
+    if ([...params.keys()].length) params.set('facet', facetFields());
+    // replaceState, not pushState: this fires on every keystroke of a debounced search, and
+    // filling the back button with them would make it useless for leaving the page.
+    history.replaceState(null, '', params.toString() ? `?${params}` : location.pathname);
+}
+
+function readUrl() {
+    const params = new URLSearchParams(location.search);
+    state.q = params.get('q') || '';
+    const mode = params.get('mode');
+    if (['bm25', 'semantic', 'code'].includes(mode)) state.mode = mode;
+    state.sort = sortFromSpec(params.get('sort'));
+    state.page = Math.max(0, Number(params.get('page')) || 0);
+    try {
+        if (params.get('filter')) applyFilter(JSON.parse(params.get('filter')));
+    } catch {
+        // A malformed filter must not blank the page; the unfiltered view is a fine fallback.
+    }
+    el('q').value = state.q;
+    el('mode').value = state.mode;
+    el('sort').value = state.sort;
+}
+
+/** The sort control's value from a compiled sort spec, or "" if it is not one of ours. */
+function sortFromSpec(json) {
+    try {
+        const spec = JSON.parse(json);
+        const field = spec?.field?.split('#')[1];
+        const options = [...el('sort').options].map(o => o.value);
+        const candidate = `${field}:${spec.order || 'asc'}`;
+        return options.includes(candidate) ? candidate : '';
+    } catch {
+        return '';
+    }
+}
+
+/** Walk our own filter shape back into widget state. */
+function applyFilter(root) {
+    const flat = [];
+    (function walk(c) {
+        if (!c) return;
+        if (c.op === 'and') c.args.forEach(walk);
+        else flat.push(c);
+    })(root);
+
+    const eq = new Map();     // field -> [values]
+    const add = (f, v) => { if (!eq.has(f)) eq.set(f, []); eq.get(f).push(v); };
+
+    for (const c of flat) {
+        const field = c.args?.[0]?.property;
+        const value = c.args?.[1];
+        if (c.op === '=') add(field, value);
+        else if (c.op === 'or' && c.args.every(a => a.op === '=')) {
+            c.args.forEach(a => add(a.args[0].property, a.args[1]));
+        } else if (c.op === 'between' && field === F('publishedOn')) {
+            const lo = dateAxis.years.indexOf(Number(String(value).slice(0, 4)));
+            const hi = dateAxis.years.indexOf(Number(String(c.args[2]).slice(0, 4)));
+            if (lo >= 0 && hi >= 0) state.yearIdx = [lo, hi];
+        } else if (c.op === '>=' && field === F('prepMinutes')) {
+            state.prepBucket = [value, state.prepBucket?.[1] ?? null];
+        } else if (c.op === '<' && field === F('prepMinutes')) {
+            state.prepBucket = [state.prepBucket?.[0] ?? null, value];
+        } else if (c.op === '>=' && field === F('stars')) {
+            state.minStars = String(value);
+            el('min-stars').value = state.minStars;
+        }
+    }
+
+    if (eq.has(F('entityType'))) state.kind = eq.get(F('entityType'))[0];
+
+    // A dimension's levels are consumed in order: the run of leading levels present is the
+    // drill path, and all of it is filtered, which is what the URL recorded.
+    for (const [id, dim] of Object.entries(DIMS)) {
+        const path = [];
+        for (const field of dim.fields) {
+            if (!eq.has(field)) break;
+            path.push(String(eq.get(field)[0]));
+        }
+        state.drill[id] = { path, depth: path.length };
+    }
+
+    // Whatever is left and is a facet field we render is a flat multi-select.
+    for (const f of FACETS) {
+        if (eq.has(f.key)) state.sel[f.key] = new Set(eq.get(f.key));
+    }
+}
+
 /* ── run and render ────────────────────────────────────────────────────── */
 
 let seq = 0;
@@ -549,6 +676,7 @@ let seq = 0;
 async function run() {
     const mine = ++seq;
     el('debug-sparql').textContent = searchQuery() + '\n\n/* facets */\n' + facetQuery();
+    syncUrl();
     renderModeNote();
 
 
@@ -1137,6 +1265,9 @@ function wireChrome() {
 (async function main() {
     wireChrome();
     renderTestList();
+    // The axis must exist before a ?filter= date range can be read back into slider indices,
+    // and the dimension names before a drill path can be matched to its levels.
     await Promise.all([loadConfig(), loadDateAxis()]);
+    readUrl();
     run();
 })();
