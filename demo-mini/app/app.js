@@ -61,6 +61,10 @@ const state = {
     dateFrom: '', dateTo: '',
     minStars: '', reviewer: null, starsExact: null,
     prepBucket: null,   // [low, high]
+    // Which hierarchy nodes are OPEN, which is not the same as which are FILTERED.
+    // luc:facet takes its own cqlFilter, so a node's children can be fetched with an "="
+    // that never reaches the results query — browsing the tree without narrowing anything.
+    open: { region: new Set(), reviewer: new Set() },
     config: null,
 };
 
@@ -107,7 +111,7 @@ async function sparql(query) {
  * with the chosen one ticked. Standard faceted-search behaviour; Solr and Elasticsearch
  * spell it as excluding a tagged filter.
  */
-function buildFilter(skip = {}) {
+function buildFilter(skip = {}, pin = {}) {
     const clauses = [];
 
     for (const [field, values] of Object.entries(state.sel)) {
@@ -116,8 +120,12 @@ function buildFilter(skip = {}) {
 
     // A "=" on a hierarchy level both narrows the results AND tells luc:facet to return
     // that level's children. One clause, both jobs — there is no drill-down argument.
-    if (state.region && !skip.region) clauses.push(eq(F('region'), state.region));
-    if (state.country && !skip.country) clauses.push(eq(F('country'), state.country));
+    // `pin` overrides the selection: it is how "show me Asia's countries" is expressed
+    // without Asia being a filter on the results.
+    const region = pin.region ?? (skip.region ? null : state.region);
+    const country = pin.country ?? (skip.country ? null : state.country);
+    if (region) clauses.push(eq(F('region'), region));
+    if (country) clauses.push(eq(F('country'), country));
 
     if (state.dateFrom && state.dateTo) {
         clauses.push({ op: 'between', args: [prop(F('publishedOn')), state.dateFrom, state.dateTo] });
@@ -137,7 +145,8 @@ function buildFilter(skip = {}) {
     // compiler folds them into one block join: ONE review must satisfy both. Selecting
     // "Priya" and "5" finds recipes Priya rated 5 — not recipes Priya reviewed that someone
     // else rated 5. Selecting a reviewer also drives the reviewer_stars drill-down.
-    if (state.reviewer && !skip.reviewer) clauses.push(eq(F('reviewer'), state.reviewer));
+    const reviewer = pin.reviewer ?? (skip.reviewer ? null : state.reviewer);
+    if (reviewer) clauses.push(eq(F('reviewer'), reviewer));
     if (state.starsExact !== null && !skip.stars) {
         clauses.push(eq(F('stars'), state.starsExact));
     } else if (state.minStars && !skip.stars) {
@@ -173,11 +182,11 @@ function sortSpec() {
 const lit = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
 /** The 7 luc:query / luc:facet arguments shared by every request in this view. */
-function argsFor(kind, skip = {}, facetFields = null) {
+function argsFor(kind, skip = {}, facetFields = null, pin = {}) {
     const fs = fieldSpec();
     const spec = fs === 'default' ? '"default"' : `'${fs}'`;
     const q = lit(queryString());
-    const filter = buildFilter(skip);
+    const filter = buildFilter(skip, pin);
     const f = filter ? `'${filter}'` : '""';
     if (kind === 'facet') {
         const fields = JSON.stringify(facetFields || [
@@ -221,12 +230,12 @@ GROUP BY ?entity ?rank ?totalHits ?score ?label ?desc ?code ?course ?country ?re
 ORDER BY ?rank`;
 }
 
-function facetQuery(skip = {}, facetFields = null) {
+function facetQuery(skip = {}, facetFields = null, pin = {}) {
     return `PREFIX luc: <urn:jena:lucene:index#>
 
 SELECT ?field ?value ?low ?high ?count
 WHERE {
-    (?field ?value ?low ?high ?count) luc:facet (${argsFor('facet', skip, facetFields)})
+    (?field ?value ?low ?high ?count) luc:facet (${argsFor('facet', skip, facetFields, pin)})
 }`;
 }
 
@@ -238,8 +247,8 @@ WHERE {
  * each omitting the filter belonging to the level it is asking about, so the level's own
  * values survive being chosen.
  */
-function levelQuery(dimension, skip) {
-    return facetQuery(skip, [dimension]);
+function levelQuery(dimension, skip, pin = {}) {
+    return facetQuery(skip, [dimension], pin);
 }
 
 /**
@@ -276,6 +285,17 @@ WHERE {
 }`;
 }
 
+/** Which indexed field each hit matched on, for the "matched on" line of a card. */
+function matchQuery() {
+    return `PREFIX luc: <urn:jena:lucene:index#>
+
+SELECT ?entity ?field ?value
+WHERE {
+    (?hit ?entity) luc:query (${argsFor('query')}) .
+    (?hit ?field ?value) luc:match () .
+}`;
+}
+
 function nestedQuery() {
     return `PREFIX luc: <urn:jena:lucene:index#>
 
@@ -294,24 +314,30 @@ async function run() {
     const mine = ++seq;
     el('debug-sparql').textContent = searchQuery() + '\n\n/* facets */\n' + facetQuery();
     renderModeNote();
-    renderChips();
-
-    renderTurtle();
 
     const reviewFilterActive = !!(state.reviewer || state.minStars || state.starsExact !== null);
+    const openRegions = [...state.open.region];
+    const openReviewers = [...state.open.reviewer];
 
     // Each hierarchy level is its own request, omitting the filter for the level being
-    // asked about. That is what costs the extra round trips, and what stops a chosen value
-    // from vanishing out of the list that offers it. With ten documents the cost is
-    // irrelevant; on a real corpus it is the ordinary price of exclude-own-filter faceting.
+    // asked about, plus one per OPEN node for its children. That is what costs the extra
+    // round trips, and what lets a node be opened without filtering and stops a chosen
+    // value vanishing from the list that offers it. Irrelevant at ten documents; on a real
+    // corpus it is the ordinary price of exclude-own-filter faceting.
     const jobs = {
         results: sparql(searchQuery()),
         facets: sparql(facetQuery()),
         regionTop: sparql(levelQuery(FACETS[0].key, { region: true, country: true })),
         reviewerTop: sparql(levelQuery(REVIEW_DIM.key, { reviewer: true, stars: true })),
-        regionKids: state.region ? sparql(levelQuery(FACETS[0].key, { country: true })) : null,
-        reviewerKids: state.reviewer ? sparql(levelQuery(REVIEW_DIM.key, { stars: true })) : null,
+        matched: sparql(matchQuery()),
         nested: reviewFilterActive ? sparql(nestedQuery()) : null,
+        // One Turtle fetch serves both the right-hand panel and the per-card columns, and
+        // never rejects: the explanation must not be able to take the results down.
+        turtle: sparqlTurtle(constructQuery()).catch(err => ({ error: err.message })),
+        regionKids: Promise.all(openRegions.map(v =>
+            sparql(levelQuery(FACETS[0].key, { country: true }, { region: v })).then(r => [v, r]))),
+        reviewerKids: Promise.all(openReviewers.map(v =>
+            sparql(levelQuery(REVIEW_DIM.key, { stars: true }, { reviewer: v })).then(r => [v, r]))),
     };
 
     let done;
@@ -327,27 +353,44 @@ async function run() {
     }
     if (mine !== seq) return;
 
-    await renderResults(done.results, done.nested);
+    const blocks = turtleBlocks(done.turtle);
+    renderTurtlePanel(done.turtle);
+    await renderResults(done.results, done.nested, done.matched, blocks);
     await renderFacets(done);
+    await renderChips();
+}
+
+/**
+ * Split one Turtle document into its per-subject blocks, so each result card can show its
+ * own. Jena writes a subject block starting at column 0 with its predicates indented, so
+ * a split before every unindented line is exactly a split between subjects.
+ */
+function turtleBlocks(text) {
+    const blocks = new Map();
+    if (typeof text !== 'string') return blocks;
+    for (const part of text.split(/\n(?=\S)/)) {
+        const block = part.trim();
+        if (!block || block.startsWith('PREFIX') || block.startsWith('@prefix')) continue;
+        const subject = block.split(/\s/)[0];
+        const iri = subject.startsWith('<') ? subject.slice(1, -1)
+            : subject.startsWith('kt:') ? KT + subject.slice(3)
+            : null;
+        if (iri) blocks.set(iri, block);
+    }
+    return blocks;
 }
 
 /**
  * Fetched and rendered independently of the results: this panel is an explanation, and a
  * failure to produce it must not take the search view down with it.
  */
-async function renderTurtle() {
+function renderTurtlePanel(text) {
     const node = el('turtle');
     if (!node) return;
-    const mine = seq;
-    let text;
-    try {
-        text = await sparqlTurtle(constructQuery());
-    } catch (err) {
-        if (mine !== seq) return;
-        node.textContent = '# could not build the index view\n# ' + err.message;
+    if (typeof text !== 'string') {
+        node.textContent = '# could not build the index view\n# ' + (text?.error || 'unknown error');
         return;
     }
-    if (mine !== seq) return;
     // Strip the prefix block: it is the same seven lines on every query and it pushes the
     // part worth reading below the fold.
     const body = text.split(/\n(?=\S)/).filter(b => !b.startsWith('PREFIX')).join('\n');
@@ -364,7 +407,7 @@ async function renderTurtle() {
 function bindings(res) { return res.results.bindings; }
 const val = (b, k) => b[k]?.value;
 
-async function renderResults(res, nested) {
+async function renderResults(res, nested, matched, blocks) {
     const rows = bindings(res);
     const total = rows.length ? Number(val(rows[0], 'totalHits')) : 0;
 
@@ -375,6 +418,15 @@ async function renderResults(res, nested) {
         (val(b, 'diets') || '').split('|').filter(Boolean).forEach(v => iris.add(v));
         (val(b, 'people') || '').split('|').filter(Boolean).forEach(v => iris.add(v));
     }
+    // Field IRIs get labels too, so "matched on" reads "Summary" rather than a CURIE.
+    const byMatch = new Map();
+    for (const b of bindings(matched || { results: { bindings: [] } })) {
+        const e = val(b, 'entity');
+        if (!byMatch.has(e)) byMatch.set(e, []);
+        byMatch.get(e).push({ field: val(b, 'field'), value: val(b, 'value') });
+        iris.add(val(b, 'field'));
+    }
+
     const lab = await labels.resolveMany([...iris]);
     const L = iri => lab.get(iri) || shortIri(iri);
 
@@ -404,7 +456,16 @@ async function renderResults(res, nested) {
         const diets = (val(b, 'diets') || '').split('|').filter(Boolean);
         const people = (val(b, 'people') || '').split('|').filter(Boolean);
         const recs = [...(byEntity.get(entity)?.values() || [])];
+        const hits = byMatch.get(entity) || [];
+        // A vector hit has no matched field: proximity is the whole explanation.
+        const why = state.mode === 'semantic'
+            ? `<span class="why-badge vec">nearest neighbour · cosine ${Number(val(b, 'score')).toFixed(3)}</span>`
+            : hits.length
+                ? hits.map(h => `<span class="why-badge" title="${esc(h.value)}">${esc(L(h.field))}</span>`).join('')
+                : `<span class="why-badge none">filter only — no text match</span>`;
+        const ttl = blocks?.get(entity);
         return `<article class="card">
+    <div class="card-main">
       <h2>${esc(val(b, 'label'))}</h2>
       <div class="code">${esc(val(b, 'code'))} · rank ${esc(val(b, 'rank'))} · score ${Number(val(b, 'score')).toFixed(4)}</div>
       <p class="desc">${esc(val(b, 'desc'))}</p>
@@ -419,7 +480,13 @@ async function renderResults(res, nested) {
       ${recs.length ? `<div class="reviews"><h4>Matching reviews (from CSV, via luc:nestedMatch)</h4>
         ${recs.map(r => `<div class="review"><span class="stars">${'★'.repeat(Number(r.stars) || 0)}</span>
           ${esc(r.reviewer || '')} · ${esc(r.reviewMonth || '')}</div>`).join('')}</div>` : ''}
-    </article>`;
+      <div class="why"><span class="why-label">Matched on</span>${why}</div>
+    </div>
+    <div class="card-ttl">
+      <h4>this record, as indexed</h4>
+      <pre class="ttl">${esc(ttl || '# no index view')}</pre>
+    </div>
+  </article>`;
     }).join('');
 
     el('pager').innerHTML = pages > 1
@@ -453,21 +520,25 @@ async function renderFacets(res) {
             .map(b => ({ value: val(b, 'value'), count: Number(val(b, 'count')) }))
         : [];
 
+    const kidsMap = (pairs, dim) => new Map((pairs || []).map(([v, r]) => [v, valuesOf(r, dim)]));
+
     const regionTop = valuesOf(res.regionTop, FACETS[0].key);
-    const regionKids = valuesOf(res.regionKids, FACETS[0].key);
+    const regionKids = kidsMap(res.regionKids, FACETS[0].key);
     const reviewerTop = valuesOf(res.reviewerTop, REVIEW_DIM.key);
-    const reviewerKids = valuesOf(res.reviewerKids, REVIEW_DIM.key);
+    const reviewerKids = kidsMap(res.reviewerKids, REVIEW_DIM.key);
 
     const iris = [];
     for (const list of groups.values()) list.forEach(x => { if (isIri(x.value)) iris.push(x.value); });
-    [...regionTop, ...regionKids].forEach(x => { if (isIri(x.value)) iris.push(x.value); });
+    regionTop.forEach(x => { if (isIri(x.value)) iris.push(x.value); });
+    regionKids.forEach(list => list.forEach(x => { if (isIri(x.value)) iris.push(x.value); }));
     const lab = await labels.resolveMany(iris);
     const L = v => lab.get(v) || shortIri(v);
 
     // Reviewer lives in its own group next to the stars selector, because the two combine
     // into a single-child filter and belong together in the UI.
     el('facet-reviewer').innerHTML = renderTree(reviewerTop, reviewerKids, {
-        parentKind: 'reviewer', childKind: 'stars-exact',
+        parentKind: 'reviewer', childKind: 'stars-exact', openKind: 'open-reviewer',
+        open: state.open.reviewer,
         parentSel: state.reviewer,
         childSel: state.starsExact === null ? null : String(state.starsExact),
         label: v => v, childLabel: v => `<span class="stars">${'★'.repeat(Number(v) || 0)}</span>`,
@@ -477,7 +548,8 @@ async function renderFacets(res) {
     if (regionTop.length) {
         html += `<div class="facet-group"><h3>${esc(FACETS[0].title)}</h3>`
             + renderTree(regionTop, regionKids, {
-                parentKind: 'region', childKind: 'country',
+                parentKind: 'region', childKind: 'country', openKind: 'open-region',
+                open: state.open.region,
                 parentSel: state.region, childSel: state.country,
                 label: L, childLabel: v => esc(L(v)),
             })
@@ -523,8 +595,10 @@ function renderTree(parents, kids, o) {
     if (!parents.length) return '';
     return `<ul>` + parents.map(x => {
         const on = o.parentSel === x.value;
-        const child = on && kids.length
-            ? `<ul class="hier-children">` + kids.map(k => {
+        const open = o.open.has(x.value);
+        const mine = kids.get(x.value) || [];
+        const child = open && mine.length
+            ? `<ul class="hier-children">` + mine.map(k => {
                 const kon = o.childSel === k.value;
                 return `<li><label class="opt"><input type="checkbox" data-kind="${o.childKind}"
                   data-value="${esc(k.value)}" ${kon ? 'checked' : ''}>
@@ -532,10 +606,18 @@ function renderTree(parents, kids, o) {
                   <span class="count">${k.count}</span></label></li>`;
             }).join('') + `</ul>`
             : '';
-        return `<li><label class="opt"><input type="checkbox" data-kind="${o.parentKind}"
-              data-value="${esc(x.value)}" ${on ? 'checked' : ''}>
-              <span class="name">${esc(o.label(x.value))}</span>
-              <span class="count">${x.count}</span></label>${child}</li>`;
+        // The twisty and the checkbox are deliberately separate controls: opening a node
+        // asks luc:facet for its children and changes nothing about the result set, while
+        // ticking it adds a filter. Neither implies the other, though ticking also opens,
+        // since wanting a value's children is the usual next thing.
+        return `<li><div class="hier-row">
+              <button class="twisty" data-kind="${o.openKind}" data-value="${esc(x.value)}"
+                      aria-expanded="${open}" title="${open ? 'collapse' : 'show what is inside'}">${open ? '▾' : '▸'}</button>
+              <label class="opt"><input type="checkbox" data-kind="${o.parentKind}"
+                data-value="${esc(x.value)}" ${on ? 'checked' : ''}>
+                <span class="name">${esc(o.label(x.value))}</span>
+                <span class="count">${x.count}</span></label>
+            </div>${child}</li>`;
     }).join('') + `</ul>`;
 }
 
@@ -549,8 +631,10 @@ function renderOptions(field, list, L, kind) {
     }).join('') + `</ul>`;
 }
 
+const toggle = (set, v) => { set.has(v) ? set.delete(v) : set.add(v); };
+
 function wireFacetInputs() {
-    document.querySelectorAll('#facets input, #facet-reviewer input, #facets [data-kind], #facet-reviewer [data-kind]').forEach(node => {
+    document.querySelectorAll('#facets [data-kind], #facet-reviewer [data-kind]').forEach(node => {
         node.onclick = ev => {
             const d = ev.currentTarget.dataset;
             state.page = 0;
@@ -560,9 +644,16 @@ function wireFacetInputs() {
                     set.has(d.value) ? set.delete(d.value) : set.add(d.value);
                     break;
                 }
+                case 'open-region':
+                    toggle(state.open.region, d.value);
+                    break;
+                case 'open-reviewer':
+                    toggle(state.open.reviewer, d.value);
+                    break;
                 case 'reviewer':
                     state.reviewer = state.reviewer === d.value ? null : d.value;
                     state.starsExact = null;
+                    if (state.reviewer) state.open.reviewer.add(d.value);
                     break;
                 case 'stars-exact': {
                     const n = Number(d.value);
@@ -572,6 +663,7 @@ function wireFacetInputs() {
                 case 'region':
                     state.region = state.region === d.value ? null : d.value;
                     state.country = null;
+                    if (state.region) state.open.region.add(d.value);
                     break;
                 case 'country':
                     state.country = state.country === d.value ? null : d.value;
@@ -589,23 +681,39 @@ function wireFacetInputs() {
     });
 }
 
-function renderChips() {
+/**
+ * Chips carry labels, not CURIEs — for the value AND for the field it belongs to. Field
+ * IRIs have rdfs:label in the data exactly so this can go through the same label cache as
+ * everything else, instead of title-casing idx:fieldName in JavaScript.
+ */
+async function renderChips() {
     const chips = [];
-    const add = (text, clear) => chips.push({ text, clear });
+    const add = (fieldIri, value, text, clear) => chips.push({ fieldIri, value, text, clear });
+
     for (const [field, values] of Object.entries(state.sel)) {
-        for (const v of values) add(`${field.split('#')[1]}: ${shortIri(v)}`, () => state.sel[field].delete(v));
+        for (const v of values) add(field, v, null, () => state.sel[field].delete(v));
     }
-    if (state.region) add(`region: ${shortIri(state.region)}`, () => { state.region = null; state.country = null; });
-    if (state.country) add(`country: ${shortIri(state.country)}`, () => { state.country = null; });
-    if (state.dateFrom) add(`from ${state.dateFrom}`, () => { state.dateFrom = ''; el('date-from').value = ''; });
-    if (state.dateTo) add(`to ${state.dateTo}`, () => { state.dateTo = ''; el('date-to').value = ''; });
-    if (state.reviewer) add(`reviewer: ${state.reviewer}`, () => { state.reviewer = null; state.starsExact = null; });
-    if (state.starsExact !== null) add(`stars = ${state.starsExact}`, () => { state.starsExact = null; });
-    else if (state.minStars) add(`stars ≥ ${state.minStars}`, () => { state.minStars = ''; el('min-stars').value = ''; });
-    if (state.prepBucket) add(`prep ${state.prepBucket[0] ?? ''}–${state.prepBucket[1] ?? ''} min`, () => { state.prepBucket = null; });
+    if (state.region) add(F('region'), state.region, null, () => { state.region = null; state.country = null; });
+    if (state.country) add(F('country'), state.country, null, () => { state.country = null; });
+    if (state.dateFrom) add(F('publishedOn'), null, `from ${state.dateFrom}`, () => { state.dateFrom = ''; el('date-from').value = ''; });
+    if (state.dateTo) add(F('publishedOn'), null, `to ${state.dateTo}`, () => { state.dateTo = ''; el('date-to').value = ''; });
+    if (state.reviewer) add(F('reviewer'), null, state.reviewer, () => { state.reviewer = null; state.starsExact = null; });
+    if (state.starsExact !== null) add(F('stars'), null, '★'.repeat(state.starsExact), () => { state.starsExact = null; });
+    else if (state.minStars) add(F('stars'), null, `${state.minStars} or more`, () => { state.minStars = ''; el('min-stars').value = ''; });
+    if (state.prepBucket) {
+        const [lo, hi] = state.prepBucket;
+        add(F('prepMinutes'), null, lo === null ? `under ${hi} min` : hi === null ? `${lo} min and over` : `${lo}–${hi} min`,
+            () => { state.prepBucket = null; });
+    }
+
+    const wanted = [];
+    chips.forEach(c => { wanted.push(c.fieldIri); if (isIri(c.value)) wanted.push(c.value); });
+    const lab = await labels.resolveMany(wanted);
+    const L = v => lab.get(v) || shortIri(v);
 
     el('chips').innerHTML = chips.map((c, i) =>
-        `<span class="chip">${esc(c.text)}<button data-i="${i}" title="remove">×</button></span>`).join('');
+        `<span class="chip"><span class="chip-field">${esc(L(c.fieldIri))}</span>${esc(c.text ?? L(c.value))}` +
+        `<button data-i="${i}" title="remove">×</button></span>`).join('');
     el('chips').querySelectorAll('button').forEach(b => {
         b.onclick = () => { chips[Number(b.dataset.i)].clear(); state.page = 0; run(); };
     });
@@ -737,6 +845,7 @@ function wireChrome() {
         Object.assign(state, {
             q: '', mode: 'bm25', sort: '', page: 0, sel: {}, region: null, country: null,
             dateFrom: '', dateTo: '', minStars: '', reviewer: null, starsExact: null, prepBucket: null,
+            open: { region: new Set(), reviewer: new Set() },
         });
         el('q').value = ''; el('mode').value = 'bm25'; el('sort').value = '';
         el('min-stars').value = ''; el('date-from').value = ''; el('date-to').value = '';

@@ -200,3 +200,41 @@ table.res th { background: #f4f2ee; font-weight: 600; }
 table.res td { font-family: ui-monospace, monospace; font-size: .76rem; word-break: break-all; }
 .empty { color: var(--muted); font-style: italic; padding: .8rem 0; }
 .error { color: var(--bad); background: #f9ecec; padding: .6rem .8rem; border-radius: 6px; font-size: .84rem; white-space: pre-wrap; }
+
+/* ── result card: content, plus the same record as it sits in the index ── */
+.card { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: .9rem; align-items: start; }
+@media (max-width: 1500px) {
+  .card { grid-template-columns: minmax(0, 1fr); }
+}
+.card-ttl h4 {
+  font-size: .66rem; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); margin: 0 0 .25rem; font-weight: 600;
+}
+.card-ttl pre.ttl { max-height: 230px; font-size: .66rem; }
+
+/* why did this hit come back */
+.why { margin-top: .5rem; display: flex; flex-wrap: wrap; gap: .3rem; align-items: baseline; }
+.why-label {
+  font-size: .66rem; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); font-weight: 600; margin-right: .1rem;
+}
+.why-badge {
+  font-size: .72rem; padding: .1rem .4rem; border-radius: 4px;
+  background: #e9f0e9; color: #35603f; border: 1px solid #d3e2d5; cursor: help;
+}
+.why-badge.vec  { background: #ece8f7; color: #4c3c86; border-color: #ddd6f0; cursor: default; }
+.why-badge.none { background: #f2f0ec; color: var(--muted); border-color: var(--line); cursor: default; }
+
+/* hierarchy row: twisty and checkbox are separate controls */
+.hier-row { display: flex; align-items: baseline; gap: .1rem; }
+.hier-row .opt { flex: 1; min-width: 0; }
+.twisty {
+  border: 0; background: none; cursor: pointer; color: var(--muted);
+  font: inherit; font-size: .7rem; width: 1rem; padding: 0; line-height: 1.4; flex: none;
+}
+.twisty:hover { color: var(--accent); }
+
+.chip-field {
+  font-size: .66rem; text-transform: uppercase; letter-spacing: .04em;
+  opacity: .7; margin-right: .3rem;
+}

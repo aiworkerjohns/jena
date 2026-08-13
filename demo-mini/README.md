@@ -61,6 +61,53 @@ access.
 | 7 | External CSV | `idx:externalSource` | `12`, `13` | Reviews panel |
 | 8 | Vector search | `idx:VectorField` | `15`, `16` | Semantic mode |
 
+## Opening a facet is not the same as filtering by it
+
+Each drillable value has a **twisty** beside its checkbox, and the two are independent:
+the twisty shows what is inside a value, the checkbox narrows the results by it. Opening
+"Asia" leaves all ten recipes on screen.
+
+This needs no client-side trickery, because `luc:facet` takes its **own** `cqlFilter`,
+separate from the one `luc:query` gets. Asking for Asia's countries is an `=` on
+`field:region` sent only to the facet call:
+
+```sparql
+# facet call — "=" on region, so the dimension returns Asia's CHILDREN
+(?f ?value ?lo ?hi ?count) luc:facet ("default" "default" "*" '["region_country"]'
+    '{"op":"=","args":[{"property":"urn:jena:lucene:field#region"},"...region-asia"]}' 50 0)
+
+# results call — no region clause at all, so nothing is narrowed
+(?hit ?entity) luc:query ("default" "default" "*" "" "" 10 0)
+```
+
+Ticking a value adds the clause to *both*. One open node costs one extra facet request.
+
+## Everything on screen is a label, never a CURIE
+
+The chips, the facet lists, the badges and the "matched on" line all show `rdfs:label`,
+resolved through the browser-cached label endpoint one IRI at a time. That includes the
+**index fields themselves**: `data/kitchen.ttl` gives `field:region` and friends an
+`rdfs:label`, so a chip reads "COUNTRY France" through exactly the same mechanism as the
+value beside it, rather than by title-casing `idx:fieldName` in JavaScript. Those triples
+describe the index vocabulary rather than a recipe, and no shape targets them, so they add
+nothing to the index.
+
+Two views are deliberately exempt, because their whole point is to show what the server
+actually returned: the **Feature tests** table and the **Turtle** panels. Turtle without
+CURIEs would not be Turtle.
+
+## Why a result matched
+
+Each card carries a **Matched on** line naming the indexed field that produced the hit,
+from `luc:match` — `Summary` when the text query hit the summary, and the value itself on
+hover. Three cases are worth knowing, and all three appear in the demo:
+
+| Line | Means |
+|---|---|
+| `Summary`, `Title`… | the text query matched that field |
+| `nearest neighbour · cosine 0.820` | a vector hit; `luc:match` projects nothing because proximity is the whole explanation |
+| `filter only — no text match` | the CQL filter selected it and the query string was a match-all |
+
 ## The Index view panel
 
 The right-hand column is a `CONSTRUCT` over the same search, fetched as `text/turtle` and
@@ -96,6 +143,13 @@ Two things it makes visible that are otherwise invisible:
 Its `luc:query` arguments are identical to the results query, so it shares one Lucene
 execution with the results and the facets rather than searching again. It is hidden below
 1180px of viewport width.
+
+**Every card carries its own block of the same document**, in a column beside the result.
+That is one HTTP request, not one per card: the response is split on its subject blocks
+client-side, which is reliable because Jena writes each subject at column 0 with its
+predicates indented. Per-card is where nested indexing becomes legible — the review rows
+sit inside the recipe they belong to, as `luc:matchedRecord` blank nodes, which is exactly
+how the Lucene block join holds them.
 
 Two extras fall out of the above: **sort pushdown and paging** (`14`, the Sort dropdown),
 and the **config endpoint** — the badge top-right is `GET /$/config/effective`, reporting

@@ -166,3 +166,29 @@ kt:recipe-r10 a kt:Recipe ;
     kt:publishedOn "2024-06-15"^^xsd:date ;
     kt:author kt:person-chika ;
     kt:testedBy kt:person-ada .
+
+## --- Labels for the index fields themselves ---
+##
+## The app shows field names in chips ("Region: Europe") and in the "matched on" line of a
+## result card. Rather than title-casing idx:fieldName in JavaScript, the field IRIs get
+## rdfs:label like anything else, so ONE mechanism — the label cache — covers every IRI the
+## UI displays. These triples describe the index vocabulary, not recipes; no shape targets
+## them, so they add nothing to the index.
+
+PREFIX field: <urn:jena:lucene:field#>
+
+field:title        rdfs:label "Title" .
+field:summary      rdfs:label "Summary" .
+field:code         rdfs:label "Recipe code" .
+field:codeText     rdfs:label "Recipe code" .
+field:course       rdfs:label "Course" .
+field:country      rdfs:label "Country" .
+field:region       rdfs:label "Region" .
+field:diet         rdfs:label "Diet" .
+field:contributor  rdfs:label "Person" .
+field:prepMinutes  rdfs:label "Prep time" .
+field:publishedOn  rdfs:label "Published" .
+field:embedding    rdfs:label "Embedding" .
+field:reviewer     rdfs:label "Reviewer" .
+field:stars        rdfs:label "Stars" .
+field:reviewMonth  rdfs:label "Review month" .
