@@ -89,6 +89,10 @@ public class TestFModConfig {
         return r.body();
     }
 
+    private static HttpResponse<String> rawGet(String url) throws Exception {
+        return raw(url, "GET");
+    }
+
     private static HttpResponse<String> raw(String url, String method) throws Exception {
         return HttpClient.newHttpClient().send(
             HttpRequest.newBuilder(URI.create(url))
@@ -96,106 +100,159 @@ public class TestFModConfig {
             HttpResponse.BodyHandlers.ofString());
     }
 
+
+
+
+
+
+
+
+    // ---- The server configuration is the root, because Fuseki allows only one.
+
     @Test
-    public void listsTheServerConfigFile(@TempDir Path tmp) throws Exception {
+    public void rootServesTheServerConfigurationAsTurtle(@TempDir Path tmp) throws Exception {
         Path cfg = tmp.resolve("config.ttl");
         Files.writeString(cfg, CONFIG);
         startWithConfig(cfg);
 
-        JsonObject body = JSON.parse(get("http://localhost:" + server.getHttpPort() + "/$/config"));
-        JsonArray sources = body.get("sources").getAsArray();
-        assertEquals(1, sources.size(), "expected exactly the --config file");
-
-        JsonObject source = sources.get(0).getAsObject();
-        assertEquals("server", source.get("kind").getAsString().value());
-        assertTrue(source.get("path").getAsString().value().endsWith("config.ttl"));
-        assertTrue(source.get("readable").getAsBoolean().value());
-        assertNotNull(source.get("id"));
-    }
-
-    /**
-     * One request is enough. The listing carries the content, so a caller does not have
-     * to read a listing, pick an id and come back for something already in memory.
-     */
-    @Test
-    public void theListingCarriesTheConfigurationItself(@TempDir Path tmp) throws Exception {
-        Path cfg = tmp.resolve("config.ttl");
-        Files.writeString(cfg, CONFIG);
-        startWithConfig(cfg);
-
-        JsonObject source = JSON.parse(get("http://localhost:" + server.getHttpPort() + "/$/config"))
-            .get("sources").getAsArray().get(0).getAsObject();
-        assertEquals(CONFIG, source.get("text").getAsString().value());
-    }
-
-    /** {@code Accept: text/turtle} on the collection returns the configuration directly. */
-    @Test
-    public void acceptTurtleOnTheCollectionReturnsTheConfig(@TempDir Path tmp) throws Exception {
-        Path cfg = tmp.resolve("config.ttl");
-        Files.writeString(cfg, CONFIG);
-        startWithConfig(cfg);
-
-        HttpResponse<String> r = HttpClient.newHttpClient().send(
-            HttpRequest.newBuilder(URI.create("http://localhost:" + server.getHttpPort() + "/$/config"))
-                .header("Accept", "text/turtle").GET().build(),
-            HttpResponse.BodyHandlers.ofString());
-
+        HttpResponse<String> r = rawGet("http://localhost:" + server.getHttpPort() + "/$/config");
         assertEquals(200, r.statusCode());
-        assertEquals(CONFIG, r.body());
-        assertTrue(r.headers().firstValue("Content-Type").orElse("").contains("text/turtle"));
-    }
-
-    /**
-     * A browser sends "text/html,...,*&#47;*". Matching the wildcard would hand it a
-     * Turtle download in place of the listing, so Turtle is served only when named.
-     */
-    @Test
-    public void aBrowserAcceptHeaderStillGetsTheJsonListing(@TempDir Path tmp) throws Exception {
-        Path cfg = tmp.resolve("config.ttl");
-        Files.writeString(cfg, CONFIG);
-        startWithConfig(cfg);
-
-        HttpResponse<String> r = HttpClient.newHttpClient().send(
-            HttpRequest.newBuilder(URI.create("http://localhost:" + server.getHttpPort() + "/$/config"))
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .GET().build(),
-            HttpResponse.BodyHandlers.ofString());
-
-        assertEquals(200, r.statusCode());
-        assertNotNull(JSON.parse(r.body()).get("sources"), "a browser should get the listing");
-    }
-
-    /**
-     * The bytes are served, not a re-serialisation of the parsed model. Comments and
-     * prefix choices survive, and the assembler-registration triples that
-     * {@code readAssemblerFile} injects into the model do not appear.
-     */
-    @Test
-    public void servesTheFileBytesVerbatim(@TempDir Path tmp) throws Exception {
-        Path cfg = tmp.resolve("config.ttl");
-        Files.writeString(cfg, CONFIG);
-        startWithConfig(cfg);
-
-        String base = "http://localhost:" + server.getHttpPort();
-        JsonObject body = JSON.parse(get(base + "/$/config"));
-        String id = body.get("sources").getAsArray().get(0).getAsObject().get("id").getAsString().value();
-
-        String served = get(base + "/$/config/" + id);
-        assertEquals(CONFIG, served, "the endpoint must serve the file, byte for byte");
-        assertTrue(served.contains("## A comment that must survive the round trip."));
-        assertTrue(!served.contains("subClassOf"),
+        assertEquals(CONFIG, r.body(), "the root is the server configuration file, byte for byte");
+        assertTrue(r.headers().firstValue("Content-Type").orElse("").contains("turtle"));
+        assertTrue(r.body().contains("## A comment that must survive the round trip."));
+        assertTrue(!r.body().contains("subClassOf"),
             "re-serialising the parsed model would leak assembler registration triples");
     }
 
+    /** The response must not depend on Accept: a browser gets the same thing curl does. */
     @Test
-    public void unknownSourceIsNotFound(@TempDir Path tmp) throws Exception {
+    public void theRootIgnoresTheAcceptHeader(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+        String url = "http://localhost:" + server.getHttpPort() + "/$/config";
+
+        for ( String accept : new String[] {
+                "text/turtle", "application/json", "text/html,application/xhtml+xml,*/*;q=0.8" } ) {
+            HttpResponse<String> r = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create(url)).header("Accept", accept).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+            assertEquals(CONFIG, r.body(), "Accept: " + accept + " must not change the resource");
+        }
+    }
+
+    /** A server with no {@code --config} says so, and points at where datasets live. */
+    @Test
+    public void aServerWithNoConfigFileSaysSo() throws Exception {
+        server = FusekiServer.create()
+            .port(0)
+            .fusekiModules(org.apache.jena.fuseki.main.sys.FusekiModules.create(FMod_Config.create()))
+            .add("/ds", DatasetGraphFactory.createTxnMem())
+            .build()
+            .start();
+
+        HttpResponse<String> r = rawGet("http://localhost:" + server.getHttpPort() + "/$/config");
+        assertEquals(404, r.statusCode());
+    }
+
+    // ---- Dataset configurations are a separate collection, keyed by dataset name.
+
+    @Test
+    public void datasetConfigsAreListedByNameAndFetchedByName(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+        String base = "http://localhost:" + server.getHttpPort();
+
+        // No FUSEKI_BASE/configuration in this test server, so the collection is empty
+        // rather than absent - a client can tell "none" from "unsupported".
+        JsonObject body = JSON.parse(get(base + "/$/config/datasets"));
+        assertNotNull(body.get("datasets"), "the collection exists even when empty");
+
+        assertEquals(404, rawGet(base + "/$/config/datasets/nope").statusCode());
+    }
+
+    @Test
+    public void anUnknownSubResourceIsNotFound(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+        String base = "http://localhost:" + server.getHttpPort();
+
+        assertEquals(404, rawGet(base + "/$/config/wat").statusCode());
+        assertEquals(404, rawGet(base + "/$/config/datasets/a/b").statusCode());
+    }
+
+    // ---- The effective view.
+
+    @Test
+    public void effectiveViewDescribesTheRunningServerAndStatesItsLimits(@TempDir Path tmp) throws Exception {
         Path cfg = tmp.resolve("config.ttl");
         Files.writeString(cfg, CONFIG);
         startWithConfig(cfg);
 
-        HttpResponse<String> r = raw(
-            "http://localhost:" + server.getHttpPort() + "/$/config/bm90LWEtcmVhbC1pZA", "GET");
-        assertEquals(404, r.statusCode());
+        JsonObject effective = JSON.parse(
+            get("http://localhost:" + server.getHttpPort() + "/$/config/effective"));
+        assertNotNull(effective.get("fingerprintVersion"));
+        assertNotNull(effective.get("serverConfig"));
+        assertTrue(effective.get("caveats").getAsArray().size() >= 2,
+            "the effective view must state what a green fingerprint does not prove");
+
+        JsonArray datasets = effective.get("datasets").getAsArray();
+        assertEquals(1, datasets.size());
+        JsonObject ds = datasets.get(0).getAsObject();
+        assertEquals("/ds", ds.get("name").getAsString().value());
+        assertTrue(!ds.get("shaclIndex").getAsBoolean().value(),
+            "a plain memory dataset has no SHACL index, and should say so rather than omit the key");
+    }
+
+    // ---- Drift: the running configuration is what was loaded.
+
+    /**
+     * Fuseki reads its configuration once at startup and never looks again, so an edit
+     * afterwards changes the file and nothing about the running server. Serving the file
+     * live made the endpoint show an edit the server had never seen while the effective
+     * view beside it still reported the old, actually-running fingerprint.
+     */
+    @Test
+    public void anEditAfterStartupIsReportedNotServed(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+        String base = "http://localhost:" + server.getHttpPort();
+
+        JsonObject before = JSON.parse(get(base + "/$/config/effective")).get("serverConfig").getAsObject();
+        assertTrue(!before.get("changedOnDisk").getAsBoolean().value(), "unedited file is not changed");
+
+        Files.writeString(cfg, CONFIG + "\n## edited after the server started\n");
+
+        HttpResponse<String> r = rawGet(base + "/$/config");
+        assertEquals(CONFIG, r.body(),
+            "the running configuration is what was loaded, not what is on disk now");
+        assertTrue(r.headers().firstValue("Warning").isPresent(),
+            "a drifted file must announce itself");
+
+        JsonObject after = JSON.parse(get(base + "/$/config/effective")).get("serverConfig").getAsObject();
+        assertTrue(after.get("changedOnDisk").getAsBoolean().value(),
+            "an edit must be reported, or a reader assumes the difference does not exist");
+    }
+
+    /** A config file deleted after startup is not a content change, and must not 500. */
+    @Test
+    public void aDeletedFileStillServesWhatWasLoaded(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+        String base = "http://localhost:" + server.getHttpPort();
+
+        Files.delete(cfg);
+
+        assertEquals(CONFIG, get(base + "/$/config"));
+        JsonObject s = JSON.parse(get(base + "/$/config/effective")).get("serverConfig").getAsObject();
+        assertTrue(s.get("readable").getAsBoolean().value(), "it was readable at startup");
+        assertTrue(!s.get("onDiskReadable").getAsBoolean().value(), "and is gone now");
+        assertTrue(!s.get("changedOnDisk").getAsBoolean().value(),
+            "a missing file is reported as missing, not as an edit");
     }
 
     /** Read-only is a property to enforce, not just to document. */
@@ -213,104 +270,9 @@ public class TestFModConfig {
         }
     }
 
-    /** An id must mean the same file after a restart, so it cannot be a counter. */
-    @Test
-    public void sourceIdIsStableAcrossRestarts(@TempDir Path tmp) throws Exception {
-        Path cfg = tmp.resolve("config.ttl");
-        Files.writeString(cfg, CONFIG);
 
-        startWithConfig(cfg);
-        String base1 = "http://localhost:" + server.getHttpPort();
-        String first = JSON.parse(get(base1 + "/$/config"))
-            .get("sources").getAsArray().get(0).getAsObject().get("id").getAsString().value();
-        server.stop();
 
-        startWithConfig(cfg);
-        String base2 = "http://localhost:" + server.getHttpPort();
-        String second = JSON.parse(get(base2 + "/$/config"))
-            .get("sources").getAsArray().get(0).getAsObject().get("id").getAsString().value();
 
-        assertEquals(first, second);
-    }
-
-    @Test
-    public void effectiveViewDescribesDatasetsAndStatesItsLimits(@TempDir Path tmp) throws Exception {
-        Path cfg = tmp.resolve("config.ttl");
-        Files.writeString(cfg, CONFIG);
-        startWithConfig(cfg);
-
-        String base = "http://localhost:" + server.getHttpPort();
-        String id = JSON.parse(get(base + "/$/config"))
-            .get("sources").getAsArray().get(0).getAsObject().get("id").getAsString().value();
-
-        JsonObject effective = JSON.parse(get(base + "/$/config/" + id + "?view=effective"));
-        assertNotNull(effective.get("fingerprintVersion"));
-
-        JsonArray caveats = effective.get("caveats").getAsArray();
-        assertTrue(caveats.size() >= 2,
-            "the effective view must state what a green fingerprint does not prove");
-
-        JsonArray datasets = effective.get("datasets").getAsArray();
-        assertEquals(1, datasets.size());
-        JsonObject ds = datasets.get(0).getAsObject();
-        assertEquals("/ds", ds.get("name").getAsString().value());
-        assertTrue(!ds.get("shaclIndex").getAsBoolean().value(),
-            "a plain memory dataset has no SHACL index, and should say so rather than omit the key");
-    }
-
-    /** With no configuration file at all the endpoint is empty, not broken. */
-    /**
-     * The endpoint serves what the server loaded, not what is on disk now.
-     * <p>
-     * Fuseki reads its configuration once at startup and never looks again, so an edit
-     * afterwards changes the file and nothing about the running server. Serving the file
-     * live made the endpoint show an edit the server had never seen while the effective
-     * view beside it still reported the old, actually-running fingerprint — the viewer
-     * disagreeing with itself. The edit is reported, not shown.
-     */
-    @Test
-    public void anEditAfterStartupIsReportedNotServed(@TempDir Path tmp) throws Exception {
-        Path cfg = tmp.resolve("config.ttl");
-        Files.writeString(cfg, CONFIG);
-        startWithConfig(cfg);
-        String base = "http://localhost:" + server.getHttpPort();
-
-        JsonObject before = JSON.parse(get(base + "/$/config"))
-            .get("sources").getAsArray().get(0).getAsObject();
-        assertTrue(!before.get("changedOnDisk").getAsBoolean().value(), "unedited file is not changed");
-        String id = before.get("id").getAsString().value();
-
-        Files.writeString(cfg, CONFIG + "\n## edited after the server started\n");
-
-        assertEquals(CONFIG, get(base + "/$/config/" + id),
-            "the running configuration is what was loaded, not what is on disk now");
-
-        JsonObject after = JSON.parse(get(base + "/$/config"))
-            .get("sources").getAsArray().get(0).getAsObject();
-        assertTrue(after.get("changedOnDisk").getAsBoolean().value(),
-            "an edit must be reported, or a reader assumes the difference does not exist");
-    }
-
-    /** A config file deleted after startup is not a content change, and must not 500. */
-    @Test
-    public void aDeletedFileStillServesWhatWasLoaded(@TempDir Path tmp) throws Exception {
-        Path cfg = tmp.resolve("config.ttl");
-        Files.writeString(cfg, CONFIG);
-        startWithConfig(cfg);
-        String base = "http://localhost:" + server.getHttpPort();
-        String id = JSON.parse(get(base + "/$/config"))
-            .get("sources").getAsArray().get(0).getAsObject().get("id").getAsString().value();
-
-        Files.delete(cfg);
-
-        assertEquals(CONFIG, get(base + "/$/config/" + id));
-        JsonObject source = JSON.parse(get(base + "/$/config"))
-            .get("sources").getAsArray().get(0).getAsObject();
-        assertTrue(source.get("readable").getAsBoolean().value(), "it was readable at startup");
-        assertTrue(!source.get("onDiskReadable").getAsBoolean().value(), "and is gone now");
-        assertTrue(!source.get("changedOnDisk").getAsBoolean().value(),
-            "a missing file is reported as missing, not as an edit");
-    }
 
     /**
      * A command-line {@code --config} server reports no config filename of its own.
@@ -334,16 +296,4 @@ public class TestFModConfig {
         assertTrue(server.getConfigFilename().endsWith("config.ttl"));
     }
 
-    @Test
-    public void aProgrammaticServerListsNoSources() throws Exception {
-        server = FusekiServer.create()
-            .port(0)
-            .fusekiModules(org.apache.jena.fuseki.main.sys.FusekiModules.create(FMod_Config.create()))
-            .add("/ds", DatasetGraphFactory.createTxnMem())
-            .build()
-            .start();
-
-        JsonObject body = JSON.parse(get("http://localhost:" + server.getHttpPort() + "/$/config"));
-        assertEquals(0, body.get("sources").getAsArray().size());
-    }
 }

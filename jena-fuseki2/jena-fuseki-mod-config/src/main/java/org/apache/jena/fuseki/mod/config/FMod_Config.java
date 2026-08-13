@@ -21,7 +21,6 @@
 
 package org.apache.jena.fuseki.mod.config;
 
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -71,7 +70,8 @@ public class FMod_Config implements FusekiAutoModule {
      * order is not something to rely on. {@code configured} runs after every module's
      * {@code prepare} and still before the server accepts requests.
      */
-    private final AtomicReference<List<ConfigSources.Source>> sources = new AtomicReference<>(List.of());
+    private final AtomicReference<ConfigSources.Captured> captured =
+        new AtomicReference<>(ConfigSources.Captured.EMPTY);
 
     @Override
     public String name() {
@@ -87,15 +87,15 @@ public class FMod_Config implements FusekiAutoModule {
     public void prepare(FusekiServer.Builder builder, Set<String> datasetNames, Model configModel) {
         // Both paths are registered: "/$/config" for the listing, "/$/config/*" for an
         // individual source. A single "/*" pattern would not match the bare path.
-        builder.addServlet("/$/config", new ActionConfig(sources));
-        builder.addServlet("/$/config/*", new ActionConfig(sources));
+        builder.addServlet("/$/config", new ActionConfig(captured));
+        builder.addServlet("/$/config/*", new ActionConfig(captured));
     }
 
     @Override
     public void configured(FusekiServer.Builder builder, DataAccessPointRegistry dapRegistry, Model configModel) {
         // Covers the command-line case, and does so before the server accepts anything.
         if ( cmdlineConfigFile != null )
-            sources.set(ConfigSources.capture(cmdlineConfigFile));
+            captured.set(ConfigSources.capture(cmdlineConfigFile));
     }
 
     @Override
@@ -103,6 +103,6 @@ public class FMod_Config implements FusekiAutoModule {
         // A programmatically built server records its config file on the server object
         // rather than in the command line arguments, and that is only reachable here.
         if ( cmdlineConfigFile == null )
-            sources.set(ConfigSources.capture(server.getConfigFilename()));
+            captured.set(ConfigSources.capture(server.getConfigFilename()));
     }
 }

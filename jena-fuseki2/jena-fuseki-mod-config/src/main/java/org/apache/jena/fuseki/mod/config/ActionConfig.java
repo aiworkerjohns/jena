@@ -24,14 +24,14 @@ package org.apache.jena.fuseki.mod.config;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.jena.atlas.json.JSON;
 import org.apache.jena.atlas.json.JsonBuilder;
 import org.apache.jena.atlas.json.JsonValue;
 import org.apache.jena.fuseki.ctl.ActionCtl;
-import org.apache.jena.fuseki.main.FusekiServer;
 import org.apache.jena.fuseki.servlets.HttpAction;
 import org.apache.jena.fuseki.servlets.ServletOps;
 import org.apache.jena.http.HttpMethod;
@@ -41,21 +41,30 @@ import org.apache.jena.riot.WebContent;
  * Read-only browsing of the configuration a server is running.
  *
  * <pre>
- * GET /$/config                        every source, content included (JSON)
- * GET /$/config      Accept: text/turtle   the server's configuration, as Turtle
- * GET /$/config/{id}                   one source's bytes (text/turtle)
- * GET /$/config/{id}?view=effective    what the server actually resolved (JSON)
+ * GET /$/config                     the server configuration file        (Turtle)
+ * GET /$/config/effective           what the server actually resolved    (JSON)
+ * GET /$/config/datasets            dataset configuration files          (JSON)
+ * GET /$/config/datasets/{name}     one dataset's configuration file     (Turtle)
  * </pre>
  *
- * <h3>One request, not two</h3>
+ * <h3>Why the paths are shaped this way</h3>
  *
- * The listing carries each source's content inline, and {@code Accept: text/turtle} on
- * the collection returns the server configuration directly. An earlier shape made a
- * caller read a listing, pick an opaque id and come back for the content. That split
- * bought nothing: the id is derived from the path, which the same response already
- * shows, so it is not a capability check; and since the bytes are now captured at
- * startup rather than read per request, the second call fetches something already in
- * memory. The per-id path remains for addressing one file out of several.
+ * Fuseki calls two different files "config", and an API that hides that behind one path
+ * inherits the confusion. The {@code --config} file is the server configuration: there is
+ * at most one, and it is the only place a server-wide setting such as a timeout can live.
+ * The files in {@code FUSEKI_BASE/configuration/} are dataset configurations: one per
+ * dataset, each parsed into its own graph, never merged, and unable to carry a
+ * {@code fuseki:Server} at all.
+ * <p>
+ * So the root is the server configuration — singular, because Fuseki allows only one —
+ * and dataset configurations live under their own collection, keyed by dataset name.
+ * {@code FusekiServerCtl.generateConfigurationFilename} writes {@code <dsName>.ttl}, so
+ * the name is the real key and no opaque identifier is needed.
+ * <p>
+ * Each path returns one thing. An earlier revision switched the root between Turtle and
+ * JSON on the {@code Accept} header, which made the response type depend on something a
+ * reader of the URL cannot see, and turned a browser's {@code *&#47;*} into a question
+ * about content negotiation. A path per resource needs no such rule.
  *
  * <h3>Read-only, and why that is the whole design</h3>
  *
@@ -69,31 +78,39 @@ import org.apache.jena.riot.WebContent;
  *
  * <h3>No redaction</h3>
  *
- * The file is served whole. Behind the admin gate, reading configuration grants nothing
- * the caller does not already have — {@code /$/datasets} POST already writes config files
- * — there is no reliable rule for what counts as sensitive in an arbitrary assembler
- * graph, and a silently holed file defeats the purpose of a browse view. Treat this
- * endpoint as exactly as sensitive as the file.
+ * Files are served whole. Behind the admin gate, reading configuration grants nothing the
+ * caller does not already have — {@code /$/datasets} POST already writes config files —
+ * there is no reliable rule for what counts as sensitive in an arbitrary assembler graph,
+ * and a silently holed file defeats the purpose of a browse view. Treat this endpoint as
+ * exactly as sensitive as the files.
  *
  * <h3>Authentication</h3>
  *
  * This registers under {@code /$/}, which the bundled default {@code shiro.ini} restricts
- * with {@code /$/** = localhostFilter} — network position, not authentication. A
- * deployment that wants this reachable must enable real auth
- * ({@code /$/** = authcBasic,user[admin]}) rather than adding an {@code anon} rule.
+ * with {@code /$/** = localhostFilter} — network position, not authentication. Note that a
+ * reverse proxy in front of Fuseki defeats that filter entirely, because the filter
+ * compares the socket's remote address and the proxy connects from localhost. Anything
+ * fronting Fuseki must restrict admin paths itself, or Shiro must require real
+ * credentials.
  */
 public class ActionConfig extends ActionCtl {
 
-    /**
-     * The configuration as captured when the server started. Held by reference because the
-     * servlet is built during {@code prepare} but the capture happens in {@code configured},
-     * once every module has had a chance to set up its part of the run area.
-     */
-    private final AtomicReference<List<ConfigSources.Source>> sources;
+    /** Sub-collection holding the per-dataset configuration files. */
+    private static final String DATASETS = "datasets";
 
-    public ActionConfig(AtomicReference<List<ConfigSources.Source>> sources) {
+    /** The resolved view of the running server. */
+    private static final String EFFECTIVE = "effective";
+
+    /**
+     * The configuration as captured when the server started. Held by reference because
+     * the servlet is built during {@code prepare} but the capture happens later, once
+     * every module has set up its part of the run area.
+     */
+    private final AtomicReference<ConfigSources.Captured> captured;
+
+    public ActionConfig(AtomicReference<ConfigSources.Captured> captured) {
         super();
-        this.sources = sources;
+        this.captured = captured;
     }
 
     @Override
@@ -109,101 +126,96 @@ public class ActionConfig extends ActionCtl {
 
     @Override
     public void execute(HttpAction action) {
-        List<ConfigSources.Source> captured = sources.get();
-        if ( captured == null )
-            captured = List.of();
+        ConfigSources.Captured config = captured.get();
+        if ( config == null )
+            config = ConfigSources.Captured.EMPTY;
 
-        String id = itemId(action);
+        String[] segments = pathSegments(action);
         try {
-            if ( id == null ) {
-                if ( wantsTurtle(action) )
-                    serveServerConfig(action, captured);
-                else
-                    listSources(action, captured);
-                return;
+            switch ( segments.length ) {
+                case 0 -> serveServerConfig(action, config);
+                case 1 -> {
+                    if ( EFFECTIVE.equals(segments[0]) )
+                        EffectiveConfig.write(action, config);
+                    else if ( DATASETS.equals(segments[0]) )
+                        listDatasets(action, config);
+                    else
+                        ServletOps.errorNotFound("No such configuration resource: " + segments[0]);
+                }
+                case 2 -> {
+                    if ( DATASETS.equals(segments[0]) )
+                        serveDataset(action, config, segments[1]);
+                    else
+                        ServletOps.errorNotFound("No such configuration resource: " + segments[0]);
+                }
+                default -> ServletOps.errorNotFound("No such configuration resource");
             }
-            ConfigSources.Source source = ConfigSources.find(captured, id);
-            if ( source == null ) {
-                ServletOps.errorNotFound("No such configuration source");
-                return;
-            }
-            if ( "effective".equals(action.getRequestParameter("view")) )
-                EffectiveConfig.write(action, source);
-            else
-                serveRaw(action, source);
         } catch (IOException e) {
             ServletOps.errorOccurred(e);
         }
     }
 
-    /**
-     * Whether the caller asked for Turtle rather than the JSON listing.
-     * <p>
-     * Deliberately a plain containment test, not full content negotiation: a browser
-     * sends {@code Accept: text/html,...,*&#47;*}, and any q-value parser worth the name
-     * would match the wildcard and hand it a Turtle download instead of the listing it
-     * expected. Turtle is served only when it is asked for by name.
-     */
-    private static boolean wantsTurtle(HttpAction action) {
-        String accept = action.getRequestHeader("Accept");
-        return accept != null
-            && (accept.contains(WebContent.contentTypeTurtle) || accept.contains("application/x-turtle"));
-    }
-
-    /**
-     * The server's own configuration, for a caller that just wants the file.
-     * <p>
-     * A {@code --config} file is the one holding the server and its services; a
-     * {@code configuration/} entry describes a single service. So "the configuration" is
-     * the server source when there is one.
-     */
-    private void serveServerConfig(HttpAction action, List<ConfigSources.Source> captured) throws IOException {
-        for ( ConfigSources.Source s : captured ) {
-            if ( "server".equals(s.kind()) && s.readable() ) {
-                serveRaw(action, s);
-                return;
-            }
-        }
-        ServletOps.errorNotFound("This server has no server configuration file"
-                                 + " (started from the command line or programmatically)");
-    }
-
-    /** The path segment after {@code /$/config}, or null for the container itself. */
-    private static String itemId(HttpAction action) {
+    /** Path below {@code /$/config}, split and emptied of blanks. */
+    private static String[] pathSegments(HttpAction action) {
         String trailing = action.getRequestPathInfo();
         if ( trailing == null || trailing.isEmpty() || "/".equals(trailing) )
-            return null;
-        String id = trailing.startsWith("/") ? trailing.substring(1) : trailing;
-        return id.isEmpty() ? null : id;
+            return new String[0];
+        return Arrays.stream(trailing.split("/"))
+                     .filter(seg -> !seg.isEmpty())
+                     .toArray(String[]::new);
     }
 
-    private void listSources(HttpAction action, List<ConfigSources.Source> captured) throws IOException {
+    /** The single {@code --config} file. */
+    private void serveServerConfig(HttpAction action, ConfigSources.Captured config) throws IOException {
+        ConfigSources.Source server = config.server();
+        if ( server == null ) {
+            ServletOps.errorNotFound("This server has no server configuration file"
+                                     + " (started from the command line or programmatically)."
+                                     + " Dataset configurations, if any, are under /$/config/datasets");
+            return;
+        }
+        serveFile(action, server);
+    }
+
+    private void listDatasets(HttpAction action, ConfigSources.Captured config) throws IOException {
         JsonBuilder builder = new JsonBuilder();
         builder.startObject();
-        builder.key("sources").startArray();
-        for ( ConfigSources.Source s : captured ) {
-            builder.startObject()
-                   .pair("id", s.id())
-                   .pair("kind", s.kind())
-                   .pair("path", s.path())
-                   .pair("readable", s.readable())
-                   // The server is still running what it read at startup. If the file has
-                   // been edited since, say so rather than letting a reader assume the
-                   // difference does not exist.
-                   .pair("changedOnDisk", s.changedOnDisk())
-                   .pair("onDiskReadable", s.onDiskReadable());
-            // Inline, because a caller asking what configuration is running wants the
-            // configuration, and it is already in memory.
-            if ( s.readable() )
-                builder.pair("text", s.text());
-            builder.finishObject();
-        }
+        builder.key(DATASETS).startArray();
+        for ( ConfigSources.Source s : config.datasets().values() )
+            describe(builder, s);
         builder.finishArray();
         builder.finishObject();
         writeJson(action, builder.build());
     }
 
-    private void serveRaw(HttpAction action, ConfigSources.Source source) throws IOException {
+    private void serveDataset(HttpAction action, ConfigSources.Captured config, String name) throws IOException {
+        // Fuseki writes dataset names with a leading "/" in some contexts and without in
+        // filenames; accept either so a caller can paste a name straight from /$/datasets.
+        String key = name.startsWith("/") ? name.substring(1) : name;
+        ConfigSources.Source source = config.datasets().get(key);
+        if ( source == null ) {
+            ServletOps.errorNotFound("No configuration file for dataset: " + name);
+            return;
+        }
+        serveFile(action, source);
+    }
+
+    /** Describe a source without its content; the content has its own URL. */
+    static void describe(JsonBuilder builder, ConfigSources.Source s) {
+        builder.startObject();
+        if ( s.name() != null )
+            builder.pair("name", s.name());
+        builder.pair("path", s.path())
+               .pair("readable", s.readable())
+               // The server is still running what it read at startup. If the file has
+               // been edited since, say so rather than letting a reader assume the
+               // difference does not exist.
+               .pair("changedOnDisk", s.changedOnDisk())
+               .pair("onDiskReadable", s.onDiskReadable());
+        builder.finishObject();
+    }
+
+    private void serveFile(HttpAction action, ConfigSources.Source source) throws IOException {
         if ( !source.readable() ) {
             ServletOps.errorOccurred("Configuration file was not readable at startup: " + source.path());
             return;
@@ -212,8 +224,10 @@ public class ActionConfig extends ActionCtl {
         String text = source.text();
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
 
-        action.setResponseContentType(WebContent.contentTypeTurtle);
+        action.setResponseContentType(source.contentType());
         action.setResponseCharacterEncoding(WebContent.charsetUTF8);
+        action.setResponseHeader("Content-Disposition",
+            "inline; filename=\"" + Path.of(source.path()).getFileName() + "\"");
         if ( source.changedOnDisk() ) {
             // A header rather than an error: the caller asked for the running
             // configuration and is getting exactly that. This tells them the file has

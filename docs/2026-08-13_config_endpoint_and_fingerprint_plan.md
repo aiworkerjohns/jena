@@ -274,21 +274,30 @@ Fuseki-side code so far (every fuseki commit in history is an upstream `GH-nnnn`
 keeping it that way keeps the monthly upstream merge to its existing conflict set.
 
 ```
-GET /$/config                      → every source, content inlined (JSON)
-GET /$/config  Accept: text/turtle → the server configuration, as Turtle
-GET /$/config/{id}                 → one source's bytes (text/turtle, ETag)
-GET /$/config/{id}?view=effective  → what the server resolved (JSON)
+GET /$/config                   → the server configuration file     (Turtle)
+GET /$/config/effective         → what the server actually resolved (JSON)
+GET /$/config/datasets          → dataset configuration files       (JSON)
+GET /$/config/datasets/{name}   → one dataset's configuration file  (Turtle)
 ```
 
-One request suffices. An earlier shape made a caller read a listing, pick an opaque id
-and come back for the content. That split bought nothing: the id is derived from the
-path, which the same response already shows, so it gates nothing; and once the bytes were
-captured at startup, the second call fetched something already in memory. The per-id path
-stays for addressing one file out of several. Turtle is served only when named in
-`Accept`, never by matching `*/*` — a browser sends `text/html,...,*/*` and must get the
-listing rather than a download.
+**The paths name the two things Fuseki calls "config".** The `--config` file is the
+*server* configuration: at most one, and the only place a server-wide setting such as a
+timeout can live. The files in `FUSEKI_BASE/configuration/` are *dataset* configurations:
+one per dataset, each parsed into its own graph, never merged, and unable to carry a
+`fuseki:Server` at all. Collapsing both behind one path inherits Jena's own ambiguity, so
+the root is the server configuration — singular, because Fuseki allows only one — and
+dataset configurations get their own collection.
 
-Serve the **captured bytes**, not `builder.configModel()` — `readAssemblerFile` injects
+They are keyed by dataset name, not an opaque handle:
+`FusekiServerCtl.generateConfigurationFilename` writes `<dsName>.ttl`, so the name is the
+real key. Two earlier revisions got this wrong. The first made a caller read a listing,
+pick a base64 id and come back for the content — but the id is derived from the path the
+same response prints, so it gated nothing, and once the bytes were captured at startup the
+second call fetched something already in memory. The second switched the root between
+Turtle and JSON on `Accept`, which makes the response type depend on something a reader of
+the URL cannot see. A path per resource needs neither.
+
+Serve the **captured bytes**, not `builder.configModel()`Serve the **captured bytes**, not `builder.configModel()` — `readAssemblerFile` injects
 `modelExtras` (`AssemblerUtils.java:141`), assembler-registration `rdfs:subClassOf`
 triples the user never wrote.
 

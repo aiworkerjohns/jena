@@ -52,12 +52,18 @@ class EffectiveConfig {
 
     private EffectiveConfig() {}
 
-    static void write(HttpAction action, ConfigSources.Source source) throws IOException {
+    static void write(HttpAction action, ConfigSources.Captured config) throws IOException {
         JsonBuilder b = new JsonBuilder();
         b.startObject();
-        b.pair("id", source.id());
-        b.pair("path", source.path());
-        b.pair("kind", source.kind());
+        b.key("serverConfig");
+        if ( config.server() != null )
+            ActionConfig.describe(b, config.server());
+        else
+            b.startObject().finishObject();
+        b.key("datasetConfigs").startArray();
+        for ( ConfigSources.Source s : config.datasets().values() )
+            ActionConfig.describe(b, s);
+        b.finishArray();
         b.pair("fingerprintVersion", ShaclConfigFingerprint.FINGERPRINT_VERSION);
 
         b.key("caveats").startArray();

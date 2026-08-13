@@ -12,7 +12,7 @@ vars:
     sh: grep -m1 '<version>' ../pom.xml 2>/dev/null | sed 's/.*<version>\(.*\)<\/version>.*/\1/'
   FUSEKI_JAR: ../jena-fuseki2/jena-fuseki-server/target/jena-fuseki-server-{{.VERSION}}.jar
   FUSEKI_PORT: '{{.FUSEKI_PORT | default "3030"}}'
-  APP_PORT: '{{.APP_PORT | default "8000"}}'
+  APP_PORT: '{{.APP_PORT | default "8060"}}'
   SERVER_URL: http://localhost:{{.FUSEKI_PORT}}
   IMAGE_NAME: '{{.IMAGE_NAME | default "fuseki-lucene-shacl"}}'
   IMAGE_TAG: '{{.IMAGE_TAG | default .VERSION}}'

@@ -890,28 +890,18 @@ async function fetchConfigText() {
     if (_configTextPromise) return _configTextPromise;
     _configTextPromise = (async () => {
         try {
-            const listResp = await fetch(`${FUSEKI_BASE}/$/config`);
-            if (listResp.ok) {
-                const sources = (await listResp.json()).sources || [];
-                // The server config is the one holding the index definition; a
-                // configuration/ directory entry describes one service only.
-                const source = sources.find(s => s.kind === 'server' && s.readable)
-                            || sources.find(s => s.readable);
-                if (source) {
-                    const raw = await fetch(`${FUSEKI_BASE}/$/config/${encodeURIComponent(source.id)}`);
-                    if (raw.ok) return await raw.text();
-                }
-            }
+            const resp = await fetch(`${FUSEKI_BASE}/$/config`);
+            if (resp.ok) return await resp.text();
         } catch (e) {
-            // Admin endpoints are localhost-gated by default, so a remote browser
-            // reaching Fuseki directly will land here. Fall through to the local copy.
+            // Admin paths are localhost-gated by default and a fronting proxy may not
+            // forward them, so a browser talking straight to Fuseki can land here.
             console.warn('Config endpoint unavailable, falling back to local config.ttl:', e.message);
         }
         const resp = await fetch(`${CONFIG_PATH}?t=${Date.now()}`);
         if (!resp.ok) {
             throw new Error(
                 `Could not read the configuration. ${FUSEKI_BASE}/$/config was unreachable `
-                + `(admin paths are localhost-gated unless shiro.ini opens them), and there `
+                + `(admin paths are localhost-gated unless the proxy forwards them), and there `
                 + `is no local ${CONFIG_PATH} to fall back to (${resp.status}).`);
         }
         return await resp.text();
