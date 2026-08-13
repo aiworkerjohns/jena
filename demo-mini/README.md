@@ -55,10 +55,10 @@ access.
 | 3b | KEYWORD on IRIs | `idx:KeywordField` | `10` | every facet checkbox |
 | 3c | Edge n-gram | `text:EdgeNGramAnalyzer` + `text:tokenized` | `08` | Code typeahead mode |
 | 3d | INT / range facets | `idx:IntField` | `07` | "Prep time" buckets |
-| 4 | Hierarchical faceting | `idx:facetHierarchy` (root **and** nested) | `04`, `05` | Region › country, Reviewer › stars |
+| 4 | Hierarchical faceting | `idx:facetHierarchy` (root **and** nested) | `04`, `05`, `17` | Region › country, Reviewer › stars |
 | 5 | One field, many paths | two `sh:property` occurrences | `09` | "People (author or tester)" |
 | 6 | Match projection | `idx:stored` | `11`, `12` | Index view panel, and matched reviews on each card |
-| 7 | External CSV | `idx:externalSource` | `12`, `13` | Reviews panel |
+| 7 | External CSV | `idx:externalSource` | `12`, `13`, `17` | Reviews panel |
 | 8 | Vector search | `idx:VectorField` | `15`, `16` | Semantic mode |
 
 ## Opening a facet is not the same as filtering by it
@@ -248,6 +248,23 @@ because the drill path is then complete and the server is being asked for a thir
 that does not exist. Both levels stay on screen with the chosen values ticked, and sibling
 counts stay correct because they are computed under the *other* active filters. Solr and
 Elasticsearch spell the same idea as excluding a tagged filter.
+
+**A nested hierarchy's levels are correlated per child record, not cross-produced.** This
+is the guarantee that makes drilling into `Reviewer › stars` mean anything, and query `17`
+is built to falsify it. Tonkotsu Ramen has exactly two reviews — Noor gave 5, Priya gave 2
+— and drilling each reviewer on that one recipe returns exactly the rating they gave:
+
+```
+?reviewer  ?stars  ?recipes
+"Noor"     "5"     1
+"Priya"    "2"     1
+```
+
+Cross-produced levels would offer *both* ratings under *both* reviewers, promising a
+five-star Priya review that is not in the data and letting the children out-count the
+parent. Declaring `reviewer` and `stars` as **root** occurrences rather than inside the
+`idx:nested` block would do exactly that — see `03-configuration.md`, Pattern 4. The same
+guarantee on the filtering side is query `13`.
 
 **A child-scoped field has no entity-level flat facet.** `field:reviewer` is declared
 `idx:facetable true` and the index log lists it as facetable, but `luc:facet` on it returns

@@ -51,6 +51,7 @@ const TESTS = [
     '05-hierarchy-drill', '06-date-range', '07-range-facets', '08-typeahead-ngram',
     '09-fanin-contributor', '10-keyword-iri-filter', '11-match', '12-nested-match-reviews',
     '13-nested-correlation', '14-sort-and-page', '15-vector-search', '16-vector-filtered',
+    '17-nested-hierarchy-correlated',
 ];
 
 const state = {
