@@ -71,9 +71,7 @@ tasks:
     dir: test
     cmds:
       - task: require-jar
-      # --shiro: demo-only Shiro config that opens /$/config so the app can read the
-      # running configuration. See the warning at the top of test/shiro.ini.
-      - java -jar ../{{.FUSEKI_JAR}} --port {{.FUSEKI_PORT}} --shiro shiro.ini --config config.ttl
+      - java -jar ../{{.FUSEKI_JAR}} --port {{.FUSEKI_PORT}} --config config.ttl
 
   app:
     desc: Serve the static demo app against a running Fuseki
@@ -264,7 +262,7 @@ tasks:
     cmds:
       - task: require-jar
       - rm -f fuseki.log
-      - nohup java -jar ../{{.FUSEKI_JAR}} --port {{.FUSEKI_PORT}} --shiro shiro.ini --config config.ttl > fuseki.log 2>&1 &
+      - nohup java -jar ../{{.FUSEKI_JAR}} --port {{.FUSEKI_PORT}} --config config.ttl > fuseki.log 2>&1 &
       - |
         for i in $(seq 1 30); do
           if curl -sf "{{.SERVER_URL}}/$/ping" >/dev/null 2>&1; then

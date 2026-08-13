@@ -449,30 +449,37 @@ symlink is gone from `demo/Taskfile.yml`, and the dead `idx:fusekiBase` triple i
 from the demo config. Verified with the symlink absent: the app's fetch path returns bytes
 identical to the file on disk.
 
-**The demo opens the gate deliberately.** `demo/test/shiro.ini` is committed and passed
-with `--shiro`, which takes precedence over `FUSEKI_SHIRO` and over the default Fuseki
-unpacks into `run/shiro.ini` (that directory is gitignored, so editing it would not
-persist). It differs from the stock file by two lines:
+**The demo proxy was already an admin bypass, and that is what got fixed.**
 
-```ini
-/$/config    = anon
-/$/config/** = anon
-```
+An earlier attempt opened `/$/config` in a demo-only `shiro.ini`. That was solving the
+wrong problem, and testing showed why. From a non-loopback address, with the stock
+`shiro.ini`:
 
-Verified from a non-loopback address: `/$/config` and both its sub-views return 200 while
-`/$/datasets` and `/$/backups-list` still return 403 — the opening is surgical, not a
-blanket `/$/** = anon`. Confirmed beforehand that the same request returns 403 under the
-stock file, so the test means something.
+| Request | Direct to Fuseki | Through `serve_app.py` |
+|---|---|---|
+| `/$/datasets` | 403 | **200** |
+| `/$/config` | 403 | **200** |
 
-This is demo-only and the file says so at the top in a block that is hard to miss:
-`/$/config` serves the configuration verbatim, including storage paths. A deployment
-should leave it under `localhostFilter` or put it behind `authcBasic` with a real
-password.
+`_proxy_request` forwarded anything under `/fuseki/` verbatim, and the proxy binds
+`0.0.0.0` and connects to Fuseki from localhost. `LocalhostFilter` compares the socket's
+remote address, so **every** admin endpoint was laundered through the proxy — including
+`POST`/`DELETE /$/datasets`, backup and compact. Anyone on the same network could delete
+the dataset. `/$/config` needed no Shiro change because it was already reachable; the
+Shiro edit cut a careful one-path hole beside an open door.
 
-Strictly, the demo did not need this: the app reaches Fuseki through `serve_app.py`, which
-connects from localhost and already satisfied the filter. It matters for a browser pointed
-straight at Fuseki, and it lets the symlink go without leaving a fallback that could
-silently serve a stale copy.
+So the proxy carries the allowlist instead, and Fuseki keeps its stock, stricter
+configuration. `ADMIN_ALLOWED` in `serve_app.py` permits `GET /$/config` and refuses
+everything else under `/$/` before it reaches Fuseki. The app needs exactly three paths —
+`{dataset}/query`, `/$/config`, `/$/config/{id}` — so nothing is lost.
+
+Verified from a non-loopback address through the proxy: `/$/config` 200; `/$/datasets`,
+`/$/backups-list`, `/$/server`, `/$/compact` and `POST /$/datasets` all 403; the SPARQL
+endpoint still 200 and returning results. The demo-only `shiro.ini` is gone.
+
+The general lesson is worth keeping: a same-origin proxy in front of Fuseki defeats
+`LocalhostFilter` completely. Any deployment fronting Fuseki with a reverse proxy needs
+its admin paths restricted at the proxy, or real authentication in Shiro — the shipped
+default protects nothing once a proxy is in the path.
 
 The N3.js parse remains: `extractConfig` derives `predicateToFacet`, `fieldInfo`,
 `sortableFields` and `hierarchyDimensions`, and the effective view does not expose the

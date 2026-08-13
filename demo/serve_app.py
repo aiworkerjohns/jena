@@ -26,6 +26,32 @@ def _is_label_request(path: str) -> bool:
     return "v=" in query and "query=" in query
 
 
+# Admin paths this proxy is willing to forward, and the methods it will forward them
+# with. Everything else under Fuseki's "/$/" space is refused here.
+#
+# This matters more than it looks. Fuseki's default shiro.ini guards "/$/**" with
+# LocalhostFilter, which compares the *socket's* remote address. This proxy connects to
+# Fuseki from localhost, so every request it forwards satisfies that filter no matter
+# where the browser was. Without this list, running the demo on a machine reachable by
+# anyone else puts dataset creation and deletion (POST/DELETE /$/datasets), backups and
+# compaction one URL away for them - the localhost gate is laundered, not enforced.
+#
+# The app needs exactly three paths: {dataset}/query, /$/config and /$/config/{id}.
+ADMIN_PREFIX = "/$/"
+ADMIN_ALLOWED = (
+    ("/$/config", ("GET",)),
+)
+
+
+def _admin_forward_allowed(path: str, method: str) -> bool:
+    """Whether an admin path may be forwarded. Non-admin paths are not this function's business."""
+    bare = urlsplit(path).path
+    for prefix, methods in ADMIN_ALLOWED:
+        if (bare == prefix or bare.startswith(prefix + "/")) and method in methods:
+            return True
+    return False
+
+
 class DemoAppHandler(SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -66,7 +92,13 @@ class DemoAppHandler(SimpleHTTPRequestHandler):
         return str(resolved)
 
     def _proxy_request(self):
-        target = self.backend + self.path[len(self.proxy_prefix):]
+        backend_path = self.path[len(self.proxy_prefix):]
+        if backend_path.startswith(ADMIN_PREFIX) and not _admin_forward_allowed(backend_path, self.command):
+            # Refused here rather than passed to Fuseki, which would see it as a
+            # localhost request and allow it. See ADMIN_ALLOWED.
+            self.send_error(403, "Admin path not proxied by the demo server")
+            return
+        target = self.backend + backend_path
         cacheable = self.command == "GET" and _is_label_request(self.path)
         body = None
         content_length = self.headers.get("Content-Length")
