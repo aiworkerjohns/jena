@@ -882,8 +882,9 @@ let _configTextPromise = null;
  * app could only run on the same filesystem as the server, and could silently show a
  * different file from the one Fuseki had actually loaded.
  *
- * Falls back to a local config.ttl so a static deployment with no Fuseki admin access
- * still works.
+ * Falls back to a config.ttl sitting next to this app, for a static deployment that
+ * has no Fuseki admin access. The demo Taskfile no longer creates one, so in the demo
+ * the fallback firing means the endpoint is genuinely unreachable.
  */
 async function fetchConfigText() {
     if (_configTextPromise) return _configTextPromise;
@@ -907,7 +908,12 @@ async function fetchConfigText() {
             console.warn('Config endpoint unavailable, falling back to local config.ttl:', e.message);
         }
         const resp = await fetch(`${CONFIG_PATH}?t=${Date.now()}`);
-        if (!resp.ok) throw new Error(`Failed to fetch ${CONFIG_PATH}: ${resp.status}`);
+        if (!resp.ok) {
+            throw new Error(
+                `Could not read the configuration. ${FUSEKI_BASE}/$/config was unreachable `
+                + `(admin paths are localhost-gated unless shiro.ini opens them), and there `
+                + `is no local ${CONFIG_PATH} to fall back to (${resp.status}).`);
+        }
         return await resp.text();
     })();
     return _configTextPromise;

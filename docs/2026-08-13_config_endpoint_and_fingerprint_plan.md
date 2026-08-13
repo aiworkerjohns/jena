@@ -443,22 +443,43 @@ licence headers by `mvn install`, not by the ad-hoc goal.
 
 ### The demo app
 
-`loadConfig` now fetches from `/$/config` through the app's existing same-origin proxy
-(verified: the bytes match the file on disk exactly), so the app no longer requires a
-filesystem shared with the server. The dead `idx:fusekiBase` triple is gone from the demo
-config.
+`loadConfig` now fetches from `/$/config` through the app's same-origin proxy, so the app
+no longer needs a filesystem shared with the server. The `ln -sfn ../test/config.ttl`
+symlink is gone from `demo/Taskfile.yml`, and the dead `idx:fusekiBase` triple is gone
+from the demo config. Verified with the symlink absent: the app's fetch path returns bytes
+identical to the file on disk.
 
-The `ln -sfn` in `demo/Taskfile.yml` is **kept deliberately**, now as the fallback source
-rather than the primary one. Admin endpoints are localhost-gated by default, so a browser
-reaching Fuseki directly rather than through the proxy still needs a local copy; removing
-the symlink would make the documented fallback dead on arrival. The dependency is gone,
-the file is not.
+**The demo opens the gate deliberately.** `demo/test/shiro.ini` is committed and passed
+with `--shiro`, which takes precedence over `FUSEKI_SHIRO` and over the default Fuseki
+unpacks into `run/shiro.ini` (that directory is gitignored, so editing it would not
+persist). It differs from the stock file by two lines:
 
-The N3.js parse also remains: `extractConfig` derives `predicateToFacet`, `fieldInfo`,
-`sortableFields` and `hierarchyDimensions`, and the effective view does not currently
-expose the predicate mapping. Moving the app onto the JSON view means extending that view
-and reworking a 3000-line file that has no automated browser coverage here — worth doing,
-not worth doing blind.
+```ini
+/$/config    = anon
+/$/config/** = anon
+```
+
+Verified from a non-loopback address: `/$/config` and both its sub-views return 200 while
+`/$/datasets` and `/$/backups-list` still return 403 — the opening is surgical, not a
+blanket `/$/** = anon`. Confirmed beforehand that the same request returns 403 under the
+stock file, so the test means something.
+
+This is demo-only and the file says so at the top in a block that is hard to miss:
+`/$/config` serves the configuration verbatim, including storage paths. A deployment
+should leave it under `localhostFilter` or put it behind `authcBasic` with a real
+password.
+
+Strictly, the demo did not need this: the app reaches Fuseki through `serve_app.py`, which
+connects from localhost and already satisfied the filter. It matters for a browser pointed
+straight at Fuseki, and it lets the symlink go without leaving a fallback that could
+silently serve a stale copy.
+
+The N3.js parse remains: `extractConfig` derives `predicateToFacet`, `fieldInfo`,
+`sortableFields` and `hierarchyDimensions`, and the effective view does not expose the
+predicate mapping. Moving the app onto the JSON view means extending that view and
+reworking a 3000-line file with no automated browser coverage here — worth doing, not
+worth doing blind. The local-file fallback is kept for a static deployment, and now
+reports both failed attempts rather than a bare 404.
 
 ### Not done: TDB2 stamping
 
