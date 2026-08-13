@@ -57,8 +57,8 @@ access.
 | 3d | INT / range facets | `idx:IntField` | `07` | "Prep time" buckets |
 | 4 | Hierarchical faceting | `idx:facetHierarchy` (root **and** nested) | `04`, `05`, `17` | Region › country, Reviewer › stars |
 | 5 | One field, many paths **and many shapes** | repeated `sh:property` occurrences | `09`, `18` | "People (author or tester)", and the Recipes / Reviewers / Both toggle |
-| 6 | Match projection | `idx:stored` | `11`, `12` | Index view panel, and matched reviews on each card |
-| 7 | External CSV | `idx:externalSource` | `12`, `13`, `17` | Reviews panel |
+| 6 | Match projection | `idx:stored` | `11`, `12` | Index view panel, and the "matched on" line |
+| 7 | External CSV, **unstored** | `idx:externalSource` + `idx:stored false` | `12`, `13`, `17` | Reviews panel, and the review list on each card |
 | 8 | Vector search | `idx:VectorField` | `15`, `16` | Semantic mode |
 
 ## One field, three predicates, two shapes
@@ -232,11 +232,11 @@ Putting the two side by side is the clearest thing in the demo:
 | `kt:author`, `kt:course`, … | ✅ | ✗ (not what the index stores) |
 | `luc:rank`, `luc:score` | ✗ | ✅ |
 | `field:summary "…"` — the field that matched | ✗ | ✅ |
-| The review rows | **✗ — they are not in the graph at all** | ✅ as `luc:matchedRecord` |
+| The review rows | **✗ — not in the graph** | **✗ — indexed but `idx:stored false`** |
 
-That last row is the whole external-CSV story in one line. The reviews exist only in the
-index, so they can be filtered, correlated and counted, while the graph stays the record of
-what a recipe *is*.
+That last row is the whole external-content story. The reviews are in neither document:
+the graph never held them, and the index holds only what it needs to filter and count. They
+are on the card because the app read `data/reviews.csv` directly.
 
 Two extras fall out of the above: **sort pushdown and paging** (`14`, the Sort dropdown),
 and the **config endpoint** — the badge top-right is `GET /$/config/effective`, reporting
@@ -365,6 +365,33 @@ the better demo anyway, since its levels correlate per review row.
 Each recipe has exactly one country, so the root hierarchy has no cartesian product to get
 wrong. Region is never stated on a recipe; it is reached by the sequence path
 `( kt:country kt:inRegion )`.
+
+### The reviews are indexed but not stored
+
+The three review fields are `idx:stored false`. The index holds enough to **find, correlate,
+count and sort** on them and keeps **no values**:
+
+| Still works | Gone |
+|---|---|
+| same-child filter "Priya AND 5 stars" (`13`) | `luc:nestedMatch` projects nothing (`12`) |
+| the `reviewer_stars` hierarchy and its drill-down (`17`) | |
+| facet counts per reviewer and per rating | |
+| range filters and sort on `stars` | |
+
+So the graph and the index are the **filter**; the values stay in the source of truth. The
+app fetches `data/reviews.csv` itself — bundled and served beside it — and renders the rows.
+That is why a result card can show a reviewer and a rating that query `12` cannot produce,
+and why it shows *every* review on the recipe rather than only the ones that matched, with
+the matching ones marked.
+
+A browser cannot read an arbitrary path on disk, which is the real constraint; in a
+deployment this would be whatever API owns the reviews, and the shape of the code would not
+change. It is fetched once per session and cached.
+
+The trade is **display staleness against index size**: what you see is always the current
+file, and the index carries no copy of it. It does **not** buy filter freshness — the index
+is still a snapshot and must be rebuilt when the source moves. Query `12` asserts the
+absence, and says which one boolean brings projection back.
 
 `data/reviews.csv` — 25 review rows keyed by recipe IRI, **never loaded into the graph**.
 The browser does not read this file and there is no DuckDB involved: the bulk indexer reads

@@ -343,6 +343,51 @@ WHERE {
 }`;
 }
 
+/* ── reviews: indexed for filtering, read from the source for display ──── */
+
+/**
+ * The review fields are `idx:stored false`, so the index can filter, correlate, facet and
+ * sort on them but has no values to give back — `luc:nestedMatch` returns nothing. That is
+ * the point of `idx:externalSource`: the graph and the index are the FILTER, and the values
+ * stay in the source of truth.
+ *
+ * So the app reads data/reviews.csv itself, bundled and served beside it. A browser cannot
+ * reach an arbitrary path on disk, which is the real constraint here — in a deployment this
+ * would be whatever API owns the reviews, and the shape of the code would not change.
+ *
+ * Fetched once and cached: it is a static file, and every card on every page reads from the
+ * same copy.
+ */
+let reviewsPromise = null;
+
+function loadReviews() {
+    reviewsPromise ??= fetch('data/reviews.csv')
+        .then(r => r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))
+        .then(parseReviews)
+        .catch(() => new Map());
+    return reviewsPromise;
+}
+
+/**
+ * Deliberately naive: split on commas, no quoting, no escapes. That is honest about this
+ * file, which has none — a real source would use a CSV parser, and would more likely be
+ * JSON from an API anyway.
+ */
+function parseReviews(text) {
+    const [header, ...rows] = text.trim().split(/\r?\n/);
+    const cols = header.split(',');
+    const byRecipe = new Map();
+    for (const row of rows) {
+        const cells = row.split(',');
+        const rec = Object.fromEntries(cols.map((c, i) => [c.trim(), cells[i]?.trim()]));
+        if (!rec.recipe) continue;
+        if (!byRecipe.has(rec.recipe)) byRecipe.set(rec.recipe, []);
+        byRecipe.get(rec.recipe).push({ reviewer: rec.reviewer, stars: Number(rec.stars), month: rec.month });
+    }
+    for (const list of byRecipe.values()) list.sort((a, b) => a.month.localeCompare(b.month));
+    return byRecipe;
+}
+
 /* ── the kind toggle: recipes, reviewers, or both ──────────────────────── */
 
 /**
@@ -481,7 +526,6 @@ async function run() {
     el('debug-sparql').textContent = searchQuery() + '\n\n/* facets */\n' + facetQuery();
     renderModeNote();
 
-    const reviewFilterActive = !!(state.reviewer || state.minStars || state.starsExact !== null);
     const openRegions = [...state.open.region];
     const openReviewers = [...state.open.reviewer];
 
@@ -502,7 +546,7 @@ async function run() {
         dateHist: dateAxis.years.length
             ? sparql(facetQuery({ date: true }, [{ field: F('publishedOn'), ranges: yearBoundaries() }]))
             : null,
-        nested: reviewFilterActive ? sparql(nestedQuery()) : null,
+        reviews: loadReviews(),
         // One Turtle fetch serves both the right-hand panel and the per-card columns, and
         // never rejects: the explanation must not be able to take the results down.
         turtle: sparqlTurtle(constructQuery()).catch(err => ({ error: err.message })),
@@ -528,7 +572,7 @@ async function run() {
 
     renderTurtlePanel(done.turtle);
     const blocks = turtleBlocks(done.records);
-    await renderResults(done.results, done.nested, done.matched, blocks);
+    await renderResults(done.results, done.reviews, done.matched, blocks);
     await renderFacets(done);
     renderDateHistogram(done.dateHist);
     await renderKinds(done.kinds);
@@ -587,7 +631,7 @@ function renderTurtlePanel(text) {
 function bindings(res) { return res.results.bindings; }
 const val = (b, k) => b[k]?.value;
 
-async function renderResults(res, nested, matched, blocks) {
+async function renderResults(res, reviews, matched, blocks) {
     const rows = bindings(res);
     const total = rows.length ? Number(val(rows[0], 'totalHits')) : 0;
 
@@ -610,15 +654,14 @@ async function renderResults(res, nested, matched, blocks) {
     const lab = await labels.resolveMany([...iris]);
     const L = iri => lab.get(iri) || shortIri(iri);
 
-    // Group projected CSV review rows by their ?record grouping key.
-    const byEntity = new Map();
-    for (const b of bindings(nested || { results: { bindings: [] } })) {
-        const e = val(b, 'entity'), r = val(b, 'record');
-        if (!byEntity.has(e)) byEntity.set(e, new Map());
-        const recs = byEntity.get(e);
-        if (!recs.has(r)) recs.set(r, {});
-        recs.get(r)[val(b, 'field').replace('urn:jena:lucene:field#', '')] = val(b, 'value');
-    }
+    // Which reviews the current filter picked out, so the ones that made the recipe match
+    // can be marked. The index decided WHICH recipes; this decides which rows to highlight.
+    const wantsReviewer = state.reviewer;
+    const wantsStars = state.starsExact !== null ? state.starsExact
+        : state.minStars ? Number(state.minStars) : null;
+    const isMatch = r => (!wantsReviewer && wantsStars === null) ? false
+        : (!wantsReviewer || r.reviewer === wantsReviewer)
+          && (wantsStars === null || (state.starsExact !== null ? r.stars === wantsStars : r.stars >= wantsStars));
 
     const pages = Math.ceil(total / PAGE_SIZE);
     el('summary').textContent = total
@@ -635,7 +678,7 @@ async function renderResults(res, nested, matched, blocks) {
         const entity = val(b, 'entity');
         const diets = (val(b, 'diets') || '').split('|').filter(Boolean);
         const people = (val(b, 'people') || '').split('|').filter(Boolean);
-        const recs = [...(byEntity.get(entity)?.values() || [])];
+        const recs = reviews.get(entity) || [];
         const hits = byMatch.get(entity) || [];
         // A vector hit has no matched field: proximity is the whole explanation.
         const why = state.mode === 'semantic'
@@ -662,9 +705,10 @@ async function renderResults(res, nested, matched, blocks) {
       <div class="code">${val(b, 'code') ? esc(val(b, 'code')) + ' · ' : ''}rank ${esc(val(b, 'rank'))} · score ${Number(val(b, 'score')).toFixed(4)}</div>
       <p class="desc">${esc(val(b, 'desc') || '')}</p>
       <div class="badges">${facts}</div>
-      ${recs.length ? `<div class="reviews"><h4>Matching reviews (from CSV, via luc:nestedMatch)</h4>
-        ${recs.map(r => `<div class="review"><span class="stars">${'★'.repeat(Number(r.stars) || 0)}</span>
-          ${esc(r.reviewer || '')} · ${esc(r.reviewMonth || '')}</div>`).join('')}</div>` : ''}
+      ${recs.length ? `<div class="reviews">
+        <h4>Reviews <span class="tag csv">read from reviews.csv, not the index</span></h4>
+        ${recs.map(r => `<div class="review ${isMatch(r) ? 'hit' : ''}"><span class="stars">${'★'.repeat(r.stars || 0)}</span>
+          ${esc(r.reviewer || '')} · ${esc(r.month || '')}</div>`).join('')}</div>` : ''}
       <div class="why"><span class="why-label">Matched on</span>${why}</div>
     </div>
     <div class="card-ttl">

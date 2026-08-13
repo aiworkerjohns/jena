@@ -313,3 +313,6 @@ table.res td { font-family: ui-monospace, monospace; font-size: .76rem; word-bre
 }
 .kind[disabled] { opacity: .45; cursor: default; }
 .kind[disabled]:hover { border-color: var(--line); }
+.review.hit { font-weight: 600; }
+.review.hit::after { content: ' ← matched'; font-size: .68rem; color: var(--accent); font-weight: 500; }
+.reviews .tag.csv { text-transform: none; letter-spacing: 0; font-weight: 400; }

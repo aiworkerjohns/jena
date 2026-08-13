@@ -199,17 +199,32 @@ field:embedding
 ## These carry no sh:path. A field is "external" because a column binds it, nothing else.
 ## None of these values exist anywhere in the RDF graph.
 
+## idx:stored FALSE on all three review fields, deliberately.
+##
+## This is what idx:externalSource is for: the index carries enough to FIND and COUNT
+## things, and the values themselves stay in the source of truth. Filtering, same-child
+## correlation, range facets, the reviewer_stars hierarchy and sorting all still work —
+## only the value binding is given up, so luc:nestedMatch has nothing to project.
+##
+## The app therefore reads the review text from data/reviews.csv, bundled and served
+## alongside it, rather than from the graph or the index. The knowledge graph is the filter;
+## the CSV is the record. That removes DISPLAY staleness — what you see is always the
+## current file — but not FILTER staleness, because the index is still a snapshot and has
+## to be rebuilt when the source moves.
+##
+## Flip these three back to `true` and luc:nestedMatch starts projecting again with no
+## other change; query 12 shows both sides of that.
 field:reviewer
     idx:fieldName "reviewer" ;
     idx:fieldType idx:KeywordField ;
-    idx:stored true ;             # projected by luc:nestedMatch
+    idx:stored false ;
     idx:indexed true ;
     idx:facetable true .
 
 field:stars
     idx:fieldName "stars" ;
     idx:fieldType idx:IntField ;
-    idx:stored true ;             # projected by luc:nestedMatch
+    idx:stored false ;
     idx:indexed true ;
     idx:facetable true ;
     idx:sortable true .
@@ -219,7 +234,7 @@ field:stars
 field:reviewMonth
     idx:fieldName "reviewMonth" ;
     idx:fieldType idx:KeywordField ;
-    idx:stored true ;
+    idx:stored false ;
     idx:indexed true ;
     idx:facetable true .
 
