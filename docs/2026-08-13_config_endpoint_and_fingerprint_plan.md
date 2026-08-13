@@ -1,7 +1,7 @@
 ---
 title: "Config endpoint and index-shape fingerprint"
 date: "2026-08-13"
-status: "Planned, not built"
+status: "Phases 1-3 built and tested; phases 4-5 and TDB2 planned"
 ---
 
 # Config Endpoint and Index-Shape Fingerprint
@@ -66,13 +66,32 @@ differ only by `tdb2:location` — building on a large indexing VM and serving f
 somewhere else is a normal workflow, and the resulting index is entirely valid. So what
 is hashed is a *projection* of the config: the parts that determine the built artifact.
 
-**That projection already exists as a parsed object.** `ShaclIndexMapping` holds
-`FieldDef` (name, type, analyzers, flags — `:69-83`), `HierarchyDef` (`:227-228`),
-`FieldOccurrence` (`sh:path`, predicates, required class, datatype — `:275-282`) and
-`IndexProfile`. There is **no filesystem location anywhere in it**; `text:directory` and
-`text:taxonomyDirectory` live on the assembler and never reach the mapping. Hashing the
-mapping therefore excludes paths, endpoint names, timeouts, prefixes, comments and triple
-order by construction, with no exclusion list to maintain and get wrong.
+**That projection is mostly the parsed object.** `ShaclIndexMapping` holds `FieldDef`
+(name, type, analyzers, flags — `:69-83`), `HierarchyDef` (`:227-228`), `FieldOccurrence`
+(`sh:path`, predicates, required class, datatype — `:275-282`) and `IndexProfile`.
+`text:directory` and `text:taxonomyDirectory` live on the assembler and never reach the
+mapping, so they are excluded for free.
+
+Two things in the mapping *are* location-dependent and had to be excluded by hand. An
+earlier draft of this note claimed the mapping held no location at all; that was wrong,
+and both exceptions were found by writing the code and running it:
+
+- **`ExternalSourceDef.getLocation()` and its delta locations** are CSV paths in the
+  mapping. A path to data is not a description of index shape, and it is expected to
+  differ between an indexing machine and a serving one, so it is excluded. Whether deltas
+  are in use at all is structural, so the *count* is kept.
+- **`IndexProfile.getShapeNode()`** — the shape's own IRI. This one is a trap. The
+  `@prefix : <#>` idiom, which `demo/app-static/config.ttl` uses, resolves shape names
+  against the configuration file's own URI, so the same shape is
+  `file:///build/config.ttl#ReportShape` on one machine and
+  `file:///srv/config.ttl#ReportShape` on another. Including it made an end-to-end run
+  report MISMATCH purely because the directory had changed — exactly the false positive
+  the design set out to avoid. A shape's *name* determines nothing about what is written
+  to the index; profiles are distinguished by their target classes and content. Excluded,
+  and pinned by `configFileLocationIsNotSignificant`.
+
+Everything else follows by construction: endpoint names, timeouts, prefixes, comments and
+triple order never reach the mapping.
 
 ### Why not hash the RDF graph
 
@@ -93,6 +112,8 @@ labelling to compare two files that differ by a directory string is the wrong tr
 | Out | Why |
 |---|---|
 | `text:directory`, `text:taxonomyDirectory`, `tdb2:location` | not in the mapping; the whole point |
+| `ExternalSourceDef` location and delta locations | paths to data, expected to differ per machine |
+| Shape node IRI | document-relative under `@prefix : <#>`; names nothing on disk |
 | `text:maxFacetHits` | applied at query time (`:127-134`) — must not trigger a reindex warning |
 | Fuseki service and endpoint names, `ja:context` timeouts | do not affect the artifact |
 | Analyzer *parameters* | see below |
@@ -157,7 +178,7 @@ deployed index look broken.
 
 ## Deliverables
 
-### Phase 1 — Fingerprint computation
+### Phase 1 — Fingerprint computation — **BUILT**
 
 `ShaclConfigFingerprint` in `org.apache.jena.query.text`:
 
@@ -196,7 +217,7 @@ silently never run):
 Per repo test discipline, write the assertion for each behaviour before implementing it
 and confirm it fails for the expected reason.
 
-### Phase 2 — Write and read the stamp
+### Phase 2 — Write and read the stamp — **BUILT**
 
 - Compute the fingerprint in `ShaclTextIndexAssembler` (`:120-136`); carry it on
   `TextIndexConfig`.
@@ -212,11 +233,15 @@ stamp survives a merge (`forceMerge`) and a reopen.
 The `UNKNOWN` path deserves care — every index built before this ships is in it, so it
 must be quiet and non-fatal.
 
-### Phase 3 — Startup check and logging
+### Phase 3 — Startup check and logging — **BUILT**
 
-A `FusekiModule` implementing `serverAfterStarting(FusekiServer)`
-(`FusekiModule.java:139`), so the check runs once per dataset after the registry is
-populated:
+The check runs where the index is opened — in the `ShaclTextIndexLucene`
+constructor — rather than in a Fuseki module. An earlier draft put it on
+`FusekiModule.serverAfterStarting`; opening the index is the better place because it is
+the moment the two artifacts actually meet, and it covers the `shacltextindexer`,
+embedded use and tests as well as Fuseki, with no new module and no Fuseki dependency
+from `jena-text`. In a Fuseki deployment the assembler runs at startup, so this is
+startup logging.
 
 ```
 INFO  Index config fingerprint matches: /mining (sha256:a1b2c3d4…)
@@ -236,7 +261,7 @@ Warn, do not fail startup. A mismatched index still serves correct results for e
 field that was present when it was built; refusing to start would turn a degraded service
 into an outage. If a strict mode is wanted later it should be an explicit opt-in flag.
 
-### Phase 4 — Config endpoint
+### Phase 4 — Config endpoint — not started
 
 A new module `jena-fuseki2/jena-fuseki-mod-config`, following
 `jena-fuseki-mod-geosparql` exactly: a `FMod_*` class plus
@@ -293,7 +318,7 @@ Two consequences: `/$/config` is safe by default, and it will block the demo app
 deployment must enable real auth (`/$/** = authcBasic,user[admin]` with a real password).
 Do **not** add a fourth `anon` line next to `/$/server`.
 
-### Phase 5 — Effective view and demo app
+### Phase 5 — Effective view and demo app — not started
 
 `GET /$/config/{id}?view=effective` — JSON built from the live objects, not by re-parsing
 Turtle. This is the part a browser genuinely cannot compute, because it includes Jena's
@@ -369,3 +394,31 @@ Lucene check is the one that catches a real, silent failure.
 Phases 1–3 are one coherent piece of work in `jena-text` and deliver the check on their
 own — the startup log is useful with no endpoint at all. Phase 4 is independent and can
 land in parallel. Phase 5 depends on both.
+
+## What was built
+
+Phases 1–3, in `jena-text`. 45 tests, and the full suite at 854 (from an 809 baseline).
+
+| File | Role |
+|---|---|
+| `ShaclConfigFingerprint` | canonical serialisation + SHA-256, `FINGERPRINT_VERSION = 1` |
+| `ShaclIndexStamp` | commit-data keys, read/write, `compare`, `comparePairing`, `Status` |
+| `DatasetInstanceId` | the minted-once sidecar, `jena-dataset-id.properties` |
+| `DatasetLocations` | unwraps wrapper layers to find the TDB2 container directory |
+| `ShaclTextIndexLucene` | computes the fingerprint, stamps, compares, logs |
+| `shacltextindexer` | re-stamps after a rebuild, with the dataset pairing id |
+
+Verified end to end on a two-triple dataset: the indexer mints the sidecar and writes the
+stamp into `segments_N` with `pairedDatasetId` matching the sidecar; reopening logs MATCH;
+flipping one `idx:sortable` logs MISMATCH; and copying the whole thing to another
+directory still logs MATCH with an identical fingerprint.
+
+### Still to do
+
+- Phases 4 and 5: the config endpoint, the effective view, and retiring the demo app's
+  `ln -sfn` symlink and N3.js parse.
+- Surfacing the pairing check. `comparePairing` is implemented and tested, and the
+  indexer writes `pairedDatasetId`, but nothing compares it at query-serving time yet —
+  the read side needs the dataset in hand, which `TextDatasetAssembler` has and
+  `ShaclTextIndexAssembler` does not. The wiring is small; it is simply not done.
+- TDB2 stamping, per the section above.
