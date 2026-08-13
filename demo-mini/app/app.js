@@ -75,6 +75,17 @@ const prop = f => ({ property: f });
 const eq = (f, v) => ({ op: '=', args: [prop(f), v] });
 const anyOf = (f, vals) => vals.length === 1 ? eq(f, vals[0]) : { op: 'or', args: vals.map(v => eq(f, v)) };
 
+/** Same endpoint, but asking for Turtle so the raw payload can be shown verbatim. */
+async function sparqlTurtle(query) {
+    const resp = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/sparql-query', Accept: 'text/turtle' },
+        body: query,
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 400)}`);
+    return resp.text();
+}
+
 async function sparql(query) {
     const resp = await fetch(ENDPOINT, {
         method: 'POST',
@@ -211,6 +222,40 @@ WHERE {
 }`;
 }
 
+/**
+ * The right-hand Turtle panel.
+ *
+ * Field IRIs are used directly as predicates, which is what makes the output legible:
+ * a hit reads as `field:summary "..."` — the indexed field that matched and the value it
+ * matched on — rather than as a reified match object. `luc:match` supplies those; the
+ * `luc:matchedRecord` blank node is a child document that the CQL filter selected, so a
+ * CSV-backed review shows up as the actual row.
+ *
+ * The luc:query arguments are identical to the results query, so this shares one Lucene
+ * execution with the results and the facets rather than searching again.
+ */
+function constructQuery() {
+    return `PREFIX luc:   <urn:jena:lucene:index#>
+PREFIX field: <urn:jena:lucene:field#>
+PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX kt:    <${KT}>
+
+CONSTRUCT {
+    ?entity rdfs:label ?label ;
+            luc:rank ?rank ;
+            luc:score ?score ;
+            ?field ?value ;
+            luc:matchedRecord ?record .
+    ?record ?nfield ?nvalue .
+}
+WHERE {
+    (?hit ?entity ?score ?totalHits ?rank) luc:query (${argsFor('query')}) .
+    ?entity rdfs:label ?label .
+    OPTIONAL { (?hit ?field ?value) luc:match () }
+    OPTIONAL { (?hit ?record ?nfield ?nvalue) luc:nestedMatch () }
+}`;
+}
+
 function nestedQuery() {
     return `PREFIX luc: <urn:jena:lucene:index#>
 
@@ -231,6 +276,8 @@ async function run() {
     renderModeNote();
     renderChips();
 
+    renderTurtle();
+
     const reviewFilterActive = !!(state.reviewer || state.minStars || state.starsExact !== null);
     const jobs = [sparql(searchQuery()), sparql(facetQuery())];
     if (reviewFilterActive) jobs.push(sparql(nestedQuery()));
@@ -248,6 +295,36 @@ async function run() {
 
     await renderResults(results, nested);
     await renderFacets(facets);
+}
+
+/**
+ * Fetched and rendered independently of the results: this panel is an explanation, and a
+ * failure to produce it must not take the search view down with it.
+ */
+async function renderTurtle() {
+    const node = el('turtle');
+    if (!node) return;
+    const mine = seq;
+    let text;
+    try {
+        text = await sparqlTurtle(constructQuery());
+    } catch (err) {
+        if (mine !== seq) return;
+        node.textContent = '# could not build the index view\n# ' + err.message;
+        return;
+    }
+    if (mine !== seq) return;
+    // Strip the prefix block: it is the same seven lines on every query and it pushes the
+    // part worth reading below the fold.
+    const body = text.split(/\n(?=\S)/).filter(b => !b.startsWith('PREFIX')).join('\n');
+    // Under a vector query luc:match projects nothing, and the absence is the point: a KNN
+    // hit is near the query in embedding space, not a term match on some field. Say so,
+    // rather than leaving an unexplained gap where the field: predicates usually are.
+    const note = state.mode === 'semantic'
+        ? '# No field: predicates below — a KNN hit matches a vector, not a term.\n'
+          + '# Similarity is the whole explanation; luc:match has nothing to project.\n\n'
+        : '';
+    node.textContent = note + (body.trim() || '# no hits');
 }
 
 function bindings(res) { return res.results.bindings; }

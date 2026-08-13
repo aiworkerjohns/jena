@@ -85,6 +85,19 @@
       <pre id="debug-sparql"></pre>
     </details>
   </main>
+
+  <!-- ── Right-hand column: what the index actually matched ── -->
+  <aside id="rhs">
+    <h3>Index view <span class="tag ttl">text/turtle</span></h3>
+    <p class="hint">
+      A <code>CONSTRUCT</code> over the same search, returned as Turtle. Field IRIs are used
+      as predicates, so each hit shows <em>which indexed field matched and with what value</em>
+      — <code>luc:match</code> for the text query, <code>luc:matchedRecord</code> for the CSV
+      rows a filter selected. It shares one Lucene execution with the results and facets.
+      A graph has no order, which is why <code>luc:rank</code> is carried explicitly.
+    </p>
+    <pre id="turtle" class="ttl">…</pre>
+  </aside>
 </div>
 
 <script src="labels.js"></script>

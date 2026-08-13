@@ -57,9 +57,45 @@ access.
 | 3d | INT / range facets | `idx:IntField` | `07` | "Prep time" buckets |
 | 4 | Hierarchical faceting | `idx:facetHierarchy` (root **and** nested) | `04`, `05` | Region › country, Reviewer › stars |
 | 5 | One field, many paths | two `sh:property` occurrences | `09` | "People (author or tester)" |
-| 6 | Match projection | `idx:stored` | `11`, `12` | matched reviews on each card |
+| 6 | Match projection | `idx:stored` | `11`, `12` | Index view panel, and matched reviews on each card |
 | 7 | External CSV | `idx:externalSource` | `12`, `13` | Reviews panel |
 | 8 | Vector search | `idx:VectorField` | `15`, `16` | Semantic mode |
+
+## The Index view panel
+
+The right-hand column is a `CONSTRUCT` over the same search, fetched as `text/turtle` and
+shown verbatim. It answers "what did the index actually hit on":
+
+```turtle
+kt:recipe-r06  rdfs:label     "Tiramisu" ;
+        field:summary  "Savoiardi soaked in espresso, layered with mascarpone and dusted with cocoa." ;
+        luc:rank       0 ;
+        luc:score      "1.0000615"^^xsd:float .
+```
+
+Field IRIs are used **as predicates**, which is what makes it readable: `field:summary` is
+the indexed field `luc:match` says matched, and the object is the stored value it matched
+on. A filter that selected CSV children adds them as a nested record, so you see the row
+itself:
+
+```turtle
+kt:recipe-r10  rdfs:label  "Miso Soup" ;
+        luc:matchedRecord  [ field:reviewMonth "2025-11" ; field:reviewer "Priya" ; field:stars 5 ] ;
+        luc:rank 2 .
+```
+
+Two things it makes visible that are otherwise invisible:
+
+- **A vector hit has no `field:` predicate at all.** `luc:match` has nothing to project,
+  because a KNN hit is near the query in embedding space rather than matching a term. The
+  panel says so explicitly in Semantic mode.
+- **`luc:rank` has to be carried in the payload.** A graph is unordered, so the ranking
+  cannot survive as row order — which is precisely why `?rank` exists (see
+  [02-sparql-api.md](../docs/02-sparql-api.md#use-rank-for-order-not-score)).
+
+Its `luc:query` arguments are identical to the results query, so it shares one Lucene
+execution with the results and the facets rather than searching again. It is hidden below
+1180px of viewport width.
 
 Two extras fall out of the above: **sort pushdown and paging** (`14`, the Sort dropdown),
 and the **config endpoint** — the badge top-right is `GET /$/config/effective`, reporting

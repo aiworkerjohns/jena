@@ -37,9 +37,38 @@ header .sub { color: var(--muted); font-weight: 400; font-size: .85rem; margin-l
 .status.bad  { background: #f7e7e7; color: var(--bad); }
 .status.warn { background: #f8eee0; color: var(--warn); }
 
-.layout { display: grid; grid-template-columns: 320px 1fr; align-items: start; }
+.layout { display: grid; grid-template-columns: 300px minmax(0, 1fr) 430px; align-items: start; }
 
-aside {
+/* The Turtle panel is the first thing to go when there is no room for three columns. */
+@media (max-width: 1180px) {
+  .layout { grid-template-columns: 300px minmax(0, 1fr); }
+  #rhs { display: none; }
+}
+
+#rhs {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  min-height: calc(100vh - 49px);
+  padding: .9rem 1rem 2rem;
+  position: sticky;
+  top: 0;
+}
+#rhs h3 {
+  font-size: .74rem; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 .45rem;
+}
+.tag.ttl { background: #e8f0e8; color: #3d6b45; text-transform: none; letter-spacing: 0; font-family: ui-monospace, monospace; }
+pre.ttl {
+  background: #2b2926; color: #e8e4dd; padding: .7rem; border-radius: 6px;
+  overflow: auto; max-height: calc(100vh - 240px);
+  font-size: .7rem; line-height: 1.5;
+  /* Not pre-wrap: Jena writes column-aligned Turtle, and wrapping it at this width breaks
+     values mid-token and destroys the alignment that makes it readable. Scroll instead. */
+  white-space: pre;
+}
+
+/* The left sidebar only — #rhs sets its own border on the other side. */
+aside:not(#rhs) {
   border-right: 1px solid var(--line);
   background: var(--panel);
   min-height: calc(100vh - 49px);
