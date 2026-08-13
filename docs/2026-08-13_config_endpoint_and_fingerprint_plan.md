@@ -1,7 +1,7 @@
 ---
 title: "Config endpoint and index-shape fingerprint"
 date: "2026-08-13"
-status: "Phases 1-3 built and tested; phases 4-5 and TDB2 planned"
+status: "Built and tested; TDB2 stamping deliberately not done"
 ---
 
 # Config Endpoint and Index-Shape Fingerprint
@@ -397,7 +397,8 @@ land in parallel. Phase 5 depends on both.
 
 ## What was built
 
-Phases 1–3, in `jena-text`. 45 tests, and the full suite at 854 (from an 809 baseline).
+All five phases. 53 new tests in `jena-text` (857, from an 809 baseline) and 8 in the new
+Fuseki module.
 
 | File | Role |
 |---|---|
@@ -405,20 +406,64 @@ Phases 1–3, in `jena-text`. 45 tests, and the full suite at 854 (from an 809 b
 | `ShaclIndexStamp` | commit-data keys, read/write, `compare`, `comparePairing`, `Status` |
 | `DatasetInstanceId` | the minted-once sidecar, `jena-dataset-id.properties` |
 | `DatasetLocations` | unwraps wrapper layers to find the TDB2 container directory |
-| `ShaclTextIndexLucene` | computes the fingerprint, stamps, compares, logs |
+| `ShaclTextIndexLucene` | computes, stamps, compares, pairs, logs |
+| `TextDatasetAssembler` | calls `checkOrCompletePairing` on both single- and multi-index paths |
 | `shacltextindexer` | re-stamps after a rebuild, with the dataset pairing id |
+| `jena-fuseki-mod-config` | `/$/config`, raw view, effective view |
 
-Verified end to end on a two-triple dataset: the indexer mints the sidecar and writes the
-stamp into `segments_N` with `pairedDatasetId` matching the sidecar; reopening logs MATCH;
-flipping one `idx:sortable` logs MISMATCH; and copying the whole thing to another
-directory still logs MATCH with an identical fingerprint.
+Verified against a running Fuseki on a two-triple dataset: the indexer mints the sidecar
+and writes the stamp; startup logs both `Index configuration matches` and `Index is paired
+with the dataset it was built from`; flipping one `idx:sortable` logs MISMATCH; copying
+the tree elsewhere still logs MATCH with an identical fingerprint; and `/$/config` lists
+the source, serves the file byte-identical to disk, and reports the effective view with
+status, fingerprints and pairing.
 
-### Still to do
+### Pairing rules
 
-- Phases 4 and 5: the config endpoint, the effective view, and retiring the demo app's
-  `ln -sfn` symlink and N3.js parse.
-- Surfacing the pairing check. `comparePairing` is implemented and tested, and the
-  indexer writes `pairedDatasetId`, but nothing compares it at query-serving time yet —
-  the read side needs the dataset in hand, which `TextDatasetAssembler` has and
-  `ShaclTextIndexAssembler` does not. The wiring is small; it is simply not done.
-- TDB2 stamping, per the section above.
+A new index adopts the dataset it is first attached to. An existing one never rewrites its
+pairing — that would erase the evidence. An identity is minted for the attached dataset
+only when the index carries a pairing to judge it against; this covers the case where the
+database was loaded with plain `tdbloader` and so is anonymous, which would otherwise be
+reported as unknown rather than as the crossed mount it is. An unpaired index writes
+nothing.
+
+### Two upstream behaviours worth knowing
+
+**`FusekiServer.getConfigFilename()` is null for any command-line server.** `FusekiArgs`
+reads the `--config` file itself and calls `builder.parseConfig(Model)`; only
+`parseConfigFile(String)` records the name. `FMod_Config` therefore captures the name from
+`serverArgsPrepare`. The same gap is why `ActionReload` could not have worked for a
+command-line server even if it were registered. Pinned by
+`commandLineServersReportNoConfigFilename`.
+
+**`mvn apache-rat:check` from the command line is not the build's RAT check.** Invoked
+directly it uses the `default-cli` execution and reports three long-standing unapproved
+files; the execution bound into the lifecycle is configured differently and passes. Judge
+licence headers by `mvn install`, not by the ad-hoc goal.
+
+### The demo app
+
+`loadConfig` now fetches from `/$/config` through the app's existing same-origin proxy
+(verified: the bytes match the file on disk exactly), so the app no longer requires a
+filesystem shared with the server. The dead `idx:fusekiBase` triple is gone from the demo
+config.
+
+The `ln -sfn` in `demo/Taskfile.yml` is **kept deliberately**, now as the fallback source
+rather than the primary one. Admin endpoints are localhost-gated by default, so a browser
+reaching Fuseki directly rather than through the proxy still needs a local copy; removing
+the symlink would make the documented fallback dead on arrival. The dependency is gone,
+the file is not.
+
+The N3.js parse also remains: `extractConfig` derives `predicateToFacet`, `fieldInfo`,
+`sortableFields` and `hierarchyDimensions`, and the effective view does not currently
+expose the predicate mapping. Moving the app onto the JSON view means extending that view
+and reworking a 3000-line file that has no automated browser coverage here — worth doing,
+not worth doing blind.
+
+### Not done: TDB2 stamping
+
+Unchanged from the reasoning above. Nothing in the fingerprint influences the TDB2 store,
+so a stamp there records deployment provenance rather than validity and would have to be
+reported at a lower severity; and in a multi-dataset config it is unclear which index's
+fingerprint belongs in which store's sidecar. The dataset *identity* sidecar is in place,
+which is the part that carries real information.

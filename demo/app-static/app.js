@@ -870,11 +870,51 @@ function extractConfig(store) {
     };
 }
 
+// Cache: the config does not change while the server is running, and three views
+// (search, config page, stats) each ask for it.
+let _configTextPromise = null;
+
+/**
+ * The running server's configuration, as Turtle.
+ *
+ * Fetched from Fuseki's /$/config endpoint rather than from a copy sitting next to
+ * this app. The copy used to be a symlink created by the Taskfile, which meant the
+ * app could only run on the same filesystem as the server, and could silently show a
+ * different file from the one Fuseki had actually loaded.
+ *
+ * Falls back to a local config.ttl so a static deployment with no Fuseki admin access
+ * still works.
+ */
+async function fetchConfigText() {
+    if (_configTextPromise) return _configTextPromise;
+    _configTextPromise = (async () => {
+        try {
+            const listResp = await fetch(`${FUSEKI_BASE}/$/config`);
+            if (listResp.ok) {
+                const sources = (await listResp.json()).sources || [];
+                // The server config is the one holding the index definition; a
+                // configuration/ directory entry describes one service only.
+                const source = sources.find(s => s.kind === 'server' && s.readable)
+                            || sources.find(s => s.readable);
+                if (source) {
+                    const raw = await fetch(`${FUSEKI_BASE}/$/config/${encodeURIComponent(source.id)}`);
+                    if (raw.ok) return await raw.text();
+                }
+            }
+        } catch (e) {
+            // Admin endpoints are localhost-gated by default, so a remote browser
+            // reaching Fuseki directly will land here. Fall through to the local copy.
+            console.warn('Config endpoint unavailable, falling back to local config.ttl:', e.message);
+        }
+        const resp = await fetch(`${CONFIG_PATH}?t=${Date.now()}`);
+        if (!resp.ok) throw new Error(`Failed to fetch ${CONFIG_PATH}: ${resp.status}`);
+        return await resp.text();
+    })();
+    return _configTextPromise;
+}
+
 async function loadConfig() {
-    const resp = await fetch(`${CONFIG_PATH}?t=${Date.now()}`);
-    if (!resp.ok) throw new Error(`Failed to fetch ${CONFIG_PATH}: ${resp.status}`);
-    const text = await resp.text();
-    const store = await parseTurtle(text);
+    const store = await parseTurtle(await fetchConfigText());
     return extractConfig(store);
 }
 
@@ -2988,8 +3028,7 @@ function configApp() {
         async init() {
             try {
                 this.config = await loadConfig();
-                const resp = await fetch(`${CONFIG_PATH}?t=${Date.now()}`);
-                this.configRaw = await resp.text();
+                this.configRaw = await fetchConfigText();
             } catch (e) {
                 this.error = `Failed to load config: ${e.message}`;
             }
