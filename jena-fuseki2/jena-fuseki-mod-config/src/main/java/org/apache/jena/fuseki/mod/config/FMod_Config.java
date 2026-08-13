@@ -21,12 +21,15 @@
 
 package org.apache.jena.fuseki.mod.config;
 
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.jena.fuseki.main.FusekiServer;
 import org.apache.jena.cmd.CmdGeneral;
 import org.apache.jena.fuseki.main.runner.ServerArgs;
 import org.apache.jena.fuseki.main.sys.FusekiAutoModule;
+import org.apache.jena.fuseki.server.DataAccessPointRegistry;
 import org.apache.jena.rdf.model.Model;
 
 /**
@@ -60,6 +63,16 @@ public class FMod_Config implements FusekiAutoModule {
      */
     private String cmdlineConfigFile = null;
 
+    /**
+     * Configuration as captured at startup, shared with the servlets.
+     * <p>
+     * Populated in {@link #configured}, not {@link #prepare}: {@code FMod_Admin} sets up
+     * {@code FusekiServerCtl.dirConfiguration} during its own {@code prepare}, and module
+     * order is not something to rely on. {@code configured} runs after every module's
+     * {@code prepare} and still before the server accepts requests.
+     */
+    private final AtomicReference<List<ConfigSources.Source>> sources = new AtomicReference<>(List.of());
+
     @Override
     public String name() {
         return "Configuration";
@@ -74,7 +87,22 @@ public class FMod_Config implements FusekiAutoModule {
     public void prepare(FusekiServer.Builder builder, Set<String> datasetNames, Model configModel) {
         // Both paths are registered: "/$/config" for the listing, "/$/config/*" for an
         // individual source. A single "/*" pattern would not match the bare path.
-        builder.addServlet("/$/config", new ActionConfig(cmdlineConfigFile));
-        builder.addServlet("/$/config/*", new ActionConfig(cmdlineConfigFile));
+        builder.addServlet("/$/config", new ActionConfig(sources));
+        builder.addServlet("/$/config/*", new ActionConfig(sources));
+    }
+
+    @Override
+    public void configured(FusekiServer.Builder builder, DataAccessPointRegistry dapRegistry, Model configModel) {
+        // Covers the command-line case, and does so before the server accepts anything.
+        if ( cmdlineConfigFile != null )
+            sources.set(ConfigSources.capture(cmdlineConfigFile));
+    }
+
+    @Override
+    public void serverAfterStarting(FusekiServer server) {
+        // A programmatically built server records its config file on the server object
+        // rather than in the command line arguments, and that is only reachable here.
+        if ( cmdlineConfigFile == null )
+            sources.set(ConfigSources.capture(server.getConfigFilename()));
     }
 }

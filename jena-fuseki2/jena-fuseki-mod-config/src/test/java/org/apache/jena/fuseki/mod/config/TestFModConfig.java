@@ -208,6 +208,59 @@ public class TestFModConfig {
 
     /** With no configuration file at all the endpoint is empty, not broken. */
     /**
+     * The endpoint serves what the server loaded, not what is on disk now.
+     * <p>
+     * Fuseki reads its configuration once at startup and never looks again, so an edit
+     * afterwards changes the file and nothing about the running server. Serving the file
+     * live made the endpoint show an edit the server had never seen while the effective
+     * view beside it still reported the old, actually-running fingerprint — the viewer
+     * disagreeing with itself. The edit is reported, not shown.
+     */
+    @Test
+    public void anEditAfterStartupIsReportedNotServed(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+        String base = "http://localhost:" + server.getHttpPort();
+
+        JsonObject before = JSON.parse(get(base + "/$/config"))
+            .get("sources").getAsArray().get(0).getAsObject();
+        assertTrue(!before.get("changedOnDisk").getAsBoolean().value(), "unedited file is not changed");
+        String id = before.get("id").getAsString().value();
+
+        Files.writeString(cfg, CONFIG + "\n## edited after the server started\n");
+
+        assertEquals(CONFIG, get(base + "/$/config/" + id),
+            "the running configuration is what was loaded, not what is on disk now");
+
+        JsonObject after = JSON.parse(get(base + "/$/config"))
+            .get("sources").getAsArray().get(0).getAsObject();
+        assertTrue(after.get("changedOnDisk").getAsBoolean().value(),
+            "an edit must be reported, or a reader assumes the difference does not exist");
+    }
+
+    /** A config file deleted after startup is not a content change, and must not 500. */
+    @Test
+    public void aDeletedFileStillServesWhatWasLoaded(@TempDir Path tmp) throws Exception {
+        Path cfg = tmp.resolve("config.ttl");
+        Files.writeString(cfg, CONFIG);
+        startWithConfig(cfg);
+        String base = "http://localhost:" + server.getHttpPort();
+        String id = JSON.parse(get(base + "/$/config"))
+            .get("sources").getAsArray().get(0).getAsObject().get("id").getAsString().value();
+
+        Files.delete(cfg);
+
+        assertEquals(CONFIG, get(base + "/$/config/" + id));
+        JsonObject source = JSON.parse(get(base + "/$/config"))
+            .get("sources").getAsArray().get(0).getAsObject();
+        assertTrue(source.get("readable").getAsBoolean().value(), "it was readable at startup");
+        assertTrue(!source.get("onDiskReadable").getAsBoolean().value(), "and is gone now");
+        assertTrue(!source.get("changedOnDisk").getAsBoolean().value(),
+            "a missing file is reported as missing, not as an edit");
+    }
+
+    /**
      * A command-line {@code --config} server reports no config filename of its own.
      * <p>
      * {@code FusekiArgs} reads the file and calls {@code builder.parseConfig(Model)};

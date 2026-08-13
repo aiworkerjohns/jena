@@ -24,6 +24,8 @@ package org.apache.jena.fuseki.mod.config;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.jena.atlas.json.JSON;
 import org.apache.jena.atlas.json.JsonBuilder;
@@ -71,14 +73,16 @@ import org.apache.jena.riot.WebContent;
  */
 public class ActionConfig extends ActionCtl {
 
-    /** The {@code --config} file, when the command line supplied one. May be null. */
-    private final String cmdlineConfigFile;
+    /**
+     * The configuration as captured when the server started. Held by reference because the
+     * servlet is built during {@code prepare} but the capture happens in {@code configured},
+     * once every module has had a chance to set up its part of the run area.
+     */
+    private final AtomicReference<List<ConfigSources.Source>> sources;
 
-    public ActionConfig() { this(null); }
-
-    public ActionConfig(String cmdlineConfigFile) {
+    public ActionConfig(AtomicReference<List<ConfigSources.Source>> sources) {
         super();
-        this.cmdlineConfigFile = cmdlineConfigFile;
+        this.sources = sources;
     }
 
     @Override
@@ -94,21 +98,17 @@ public class ActionConfig extends ActionCtl {
 
     @Override
     public void execute(HttpAction action) {
-        // A command-line server reports no config filename (see FMod_Config), so prefer
-        // the name captured during argument processing and fall back to the builder's,
-        // which is set for a programmatically configured server.
-        FusekiServer server = FusekiServer.get(action.getRequest().getServletContext());
-        String serverConfig = cmdlineConfigFile;
-        if ( serverConfig == null && server != null )
-            serverConfig = server.getConfigFilename();
+        List<ConfigSources.Source> captured = sources.get();
+        if ( captured == null )
+            captured = List.of();
 
         String id = itemId(action);
         try {
             if ( id == null ) {
-                listSources(action, serverConfig);
+                listSources(action, captured);
                 return;
             }
-            ConfigSources.Source source = ConfigSources.find(serverConfig, id);
+            ConfigSources.Source source = ConfigSources.find(captured, id);
             if ( source == null ) {
                 ServletOps.errorNotFound("No such configuration source");
                 return;
@@ -131,16 +131,21 @@ public class ActionConfig extends ActionCtl {
         return id.isEmpty() ? null : id;
     }
 
-    private void listSources(HttpAction action, String serverConfig) throws IOException {
+    private void listSources(HttpAction action, List<ConfigSources.Source> captured) throws IOException {
         JsonBuilder builder = new JsonBuilder();
         builder.startObject();
         builder.key("sources").startArray();
-        for ( ConfigSources.Source s : ConfigSources.list(serverConfig) ) {
+        for ( ConfigSources.Source s : captured ) {
             builder.startObject()
                    .pair("id", s.id())
                    .pair("kind", s.kind())
                    .pair("path", s.path())
                    .pair("readable", s.readable())
+                   // The server is still running what it read at startup. If the file has
+                   // been edited since, say so rather than letting a reader assume the
+                   // difference does not exist.
+                   .pair("changedOnDisk", s.changedOnDisk())
+                   .pair("onDiskReadable", s.onDiskReadable())
                    .finishObject();
         }
         builder.finishArray();
@@ -150,14 +155,22 @@ public class ActionConfig extends ActionCtl {
 
     private void serveRaw(HttpAction action, ConfigSources.Source source) throws IOException {
         if ( !source.readable() ) {
-            ServletOps.errorOccurred("Configuration file is not readable: " + source.path());
+            ServletOps.errorOccurred("Configuration file was not readable at startup: " + source.path());
             return;
         }
-        String text = ConfigSources.read(source);
+        // The captured bytes, not the current file: this is what the server is running.
+        String text = source.text();
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
 
         action.setResponseContentType(WebContent.contentTypeTurtle);
         action.setResponseCharacterEncoding(WebContent.charsetUTF8);
+        if ( source.changedOnDisk() ) {
+            // A header rather than an error: the caller asked for the running
+            // configuration and is getting exactly that. This tells them the file has
+            // moved on, which is the thing they could not otherwise find out.
+            action.setResponseHeader("Warning",
+                "199 - \"Config file on disk has changed since startup; serving what the server loaded\"");
+        }
         // Lets a browsing client skip the transfer when nothing has changed. Content-based
         // rather than mtime-based, so touching a file without editing it is not a change.
         action.setResponseHeader("ETag", "\"" + Integer.toHexString(text.hashCode()) + "\"");
