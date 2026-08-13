@@ -286,6 +286,27 @@ WHERE {
 }`;
 }
 
+/**
+ * The record itself, as it sits in the graph — its own triples and nothing else.
+ *
+ * Deliberately separate from constructQuery(): that one is the *index* view (rank, score,
+ * which field matched, which child records the filter selected), and it belongs in the
+ * right-hand panel. This is the RDF the index was built FROM.
+ *
+ * The contrast is worth noticing on any card: reviews never appear here, because they live
+ * in data/reviews.csv and were never loaded into the graph. They exist only in the index,
+ * which is exactly where the right-hand panel shows them.
+ */
+function recordQuery() {
+    return `PREFIX luc: <urn:jena:lucene:index#>
+
+CONSTRUCT { ?entity ?p ?o }
+WHERE {
+    (?hit ?entity) luc:query (${argsFor('query')}) .
+    ?entity ?p ?o .
+}`;
+}
+
 /** Which indexed field each hit matched on, for the "matched on" line of a card. */
 function matchQuery() {
     return `PREFIX luc: <urn:jena:lucene:index#>
@@ -335,6 +356,7 @@ async function run() {
         // One Turtle fetch serves both the right-hand panel and the per-card columns, and
         // never rejects: the explanation must not be able to take the results down.
         turtle: sparqlTurtle(constructQuery()).catch(err => ({ error: err.message })),
+        records: sparqlTurtle(recordQuery()).catch(err => ({ error: err.message })),
         regionKids: Promise.all(openRegions.map(v =>
             sparql(levelQuery(FACETS[0].key, { country: true }, { region: v })).then(r => [v, r]))),
         reviewerKids: Promise.all(openReviewers.map(v =>
@@ -354,8 +376,8 @@ async function run() {
     }
     if (mine !== seq) return;
 
-    const blocks = turtleBlocks(done.turtle);
     renderTurtlePanel(done.turtle);
+    const blocks = turtleBlocks(done.records);
     await renderResults(done.results, done.nested, done.matched, blocks);
     await renderFacets(done);
     await renderChips();
@@ -484,8 +506,8 @@ async function renderResults(res, nested, matched, blocks) {
       <div class="why"><span class="why-label">Matched on</span>${why}</div>
     </div>
     <div class="card-ttl">
-      <h4>this record, as indexed</h4>
-      <pre class="ttl">${esc(ttl || '# no index view')}</pre>
+      <h4>the record in the graph</h4>
+      <pre class="ttl">${esc(ttl || '# no triples')}</pre>
     </div>
   </article>`;
     }).join('');

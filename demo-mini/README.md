@@ -144,12 +144,41 @@ Its `luc:query` arguments are identical to the results query, so it shares one L
 execution with the results and the facets rather than searching again. It is hidden below
 1180px of viewport width.
 
-**Every card carries its own block of the same document**, in a column beside the result.
-That is one HTTP request, not one per card: the response is split on its subject blocks
-client-side, which is reliable because Jena writes each subject at column 0 with its
-predicates indented. Per-card is where nested indexing becomes legible — the review rows
-sit inside the recipe they belong to, as `luc:matchedRecord` blank nodes, which is exactly
-how the Lucene block join holds them.
+## The record beside each card
+
+Each result also carries a column showing **the record itself, as it sits in the graph** —
+its own triples and nothing else:
+
+```turtle
+kt:recipe-r06  rdf:type      kt:Recipe ;
+        rdfs:label           "Tiramisu" ;
+        kt:author            kt:person-bruno ;
+        kt:code              "RCP-2021-0154" ;
+        kt:country           kt:country-italy ;
+        kt:course            kt:course-dessert ;
+        kt:prepMinutes       30 ;
+        kt:publishedOn       "2021-09-30"^^xsd:date ;
+        dcterms:description  "Savoiardi soaked in espresso, …" .
+```
+
+This is a separate `CONSTRUCT { ?entity ?p ?o }` over the same hits — the RDF the index was
+built **from**, as against the index view in the right-hand panel. Both are one request for
+the whole page, split on their subject blocks client-side, which is reliable because Jena
+writes each subject at column 0 with its predicates indented.
+
+Putting the two side by side is the clearest thing in the demo:
+
+| | Card column | Right-hand panel |
+|---|---|---|
+| What it is | the record in the graph | what Lucene holds and matched |
+| `kt:author`, `kt:course`, … | ✅ | ✗ (not what the index stores) |
+| `luc:rank`, `luc:score` | ✗ | ✅ |
+| `field:summary "…"` — the field that matched | ✗ | ✅ |
+| The review rows | **✗ — they are not in the graph at all** | ✅ as `luc:matchedRecord` |
+
+That last row is the whole external-CSV story in one line. The reviews exist only in the
+index, so they can be filtered, correlated and counted, while the graph stays the record of
+what a recipe *is*.
 
 Two extras fall out of the above: **sort pushdown and paging** (`14`, the Sort dropdown),
 and the **config endpoint** — the badge top-right is `GET /$/config/effective`, reporting
