@@ -14,8 +14,10 @@ on:
       - 'main'
     paths-ignore:
       ## Documentation and agent config cannot change build or image output.
-      ## Deliberately NOT ignored: demo/** (TestDemoDataParsing parses those
-      ## files), build-files/**, Taskfile.yml, and .github/** itself.
+      ## Deliberately NOT ignored: build-files/**, Taskfile.yml, and .github/** itself.
+      ## demo/** is also not ignored, though no test reads it any more — the suite passes
+      ## with that directory deleted. It stays un-ignored so that a demo smoke check can be
+      ## added here without having to remember to change this list.
       - 'docs/**'
       - '**/*.md'
       - '.claude/**'
