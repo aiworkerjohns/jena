@@ -187,6 +187,19 @@ shape; it is **not** a general CQL2 reader. Anything it does not recognise is ig
 than guessed at, so a hand-edited filter still runs correctly even where the sidebar cannot
 show why.
 
+The percent-encoding is kept to what a URL actually requires. `URLSearchParams` serialises
+as form-encoded, which escapes every `:` in an IRI and every brace and bracket of the JSON;
+RFC 3986 allows all of those unencoded in a query, so they are put back:
+
+```
+filter=%7B%22op%22%3A%22%3D%22%2C%22args%22%3A%5B%7B%22property%22%3A%22urn%3Ajena%3A…   before
+filter={%22op%22:%22=%22,%22args%22:[{%22property%22:%22urn:jena:lucene:field%23reviewer…  after
+```
+
+The remaining `%22` and `%23` are **not** ours to fix: `"` is in the URL standard's query
+percent-encode set and `#` starts the fragment, so a browser re-encodes both no matter what
+is written. Verified by writing literal quotes and reading `location.search` back.
+
 `facet` is written but not read back: which facets to request follows from the index
 configuration, not from anything the user chose, so it is recomputed on load. It is in the
 URL because it is part of the question. It is also omitted entirely from the bare landing

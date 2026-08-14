@@ -680,7 +680,33 @@ function syncUrl() {
     if ([...params.keys()].length) params.set('facet', facetFields());
     // replaceState, not pushState: this fires on every keystroke of a debounced search, and
     // filling the back button with them would make it useless for leaving the page.
-    history.replaceState(null, '', params.toString() ? `?${params}` : location.pathname);
+    const query = readableQuery(params);
+    history.replaceState(null, '', query ? `?${query}` : location.pathname);
+}
+
+/*
+ * URLSearchParams serialises as application/x-www-form-urlencoded, which escapes far more
+ * than a URL query component actually requires — every ":" in an IRI and every brace and
+ * bracket of the JSON. RFC 3986 allows all of these unencoded in a query, so putting them
+ * back turns
+ *
+ *   filter=%7B"op"%3A"%3D"%2C"args"%3A%5B%7B"property"%3A"urn%3Ajena%3A…
+ * into
+ *   filter={"op":"=","args":[{"property":"urn:jena:lucene:field%23reviewer"…
+ *
+ * Deliberately NOT restored:
+ *   &   the pair separator
+ *   +   form decoding reads it as a space, so an encoded plus must stay encoded
+ *   #   starts the fragment
+ *   "   the URL standard's query percent-encode set includes it, so a browser re-encodes
+ *       it anyway; leaving it to them keeps what we write and what is displayed the same
+ */
+const URL_SAFE = { '%3A': ':', '%2C': ',', '%2F': '/', '%5B': '[', '%5D': ']',
+                   '%7B': '{', '%7D': '}', '%3D': '=', '%40': '@', '%24': '$',
+                   '%21': '!', '%28': '(', '%29': ')', '%2A': '*' };
+
+function readableQuery(params) {
+    return params.toString().replace(/%[0-9A-F]{2}/g, m => URL_SAFE[m] ?? m);
 }
 
 function readUrl() {
