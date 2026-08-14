@@ -359,10 +359,21 @@ WHERE {
 function recordQuery() {
     return `PREFIX luc: <urn:jena:lucene:index#>
 
-CONSTRUCT { ?entity ?p ?o }
+CONSTRUCT {
+    ?entity ?p ?o .
+    ?o ?bp ?bo .
+}
 WHERE {
     (?hit ?entity) luc:query (${argsFor('query')}) .
     ?entity ?p ?o .
+    # One hop further into blank nodes — a concise bounded description rather than just the
+    # entity's own triples. Without it an ingredient record is an empty "[]", because its
+    # contents hang off a blank node and the entity only points at it. This is exactly the
+    # structure idx:joinPath walks to build the nested children.
+    OPTIONAL {
+        FILTER(isBlank(?o))
+        ?o ?bp ?bo
+    }
 }`;
 }
 

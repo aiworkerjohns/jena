@@ -296,8 +296,11 @@ kt:recipe-r06  rdf:type      kt:Recipe ;
         dcterms:description  "Savoiardi soaked in espresso, …" .
 ```
 
-This is a separate `CONSTRUCT { ?entity ?p ?o }` over the same hits — the RDF the index was
-built **from**, as against the index view in the right-hand panel. Both are one request for
+This is a separate `CONSTRUCT` over the same hits — the RDF the index was built **from**, as
+against the index view in the right-hand panel. It reaches one hop into blank nodes, a
+concise bounded description rather than only the entity's own triples: without that an
+ingredient record is an empty `[]`, since its contents hang off a blank node the recipe
+merely points at. That nesting is exactly the structure `idx:joinPath` walks. Both are one request for
 the whole page, split on their subject blocks client-side, which is reliable because Jena
 writes each subject at column 0 with its predicates indented.
 
