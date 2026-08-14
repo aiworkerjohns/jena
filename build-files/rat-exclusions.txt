@@ -31,7 +31,11 @@ archive.md
 ## external review data: a delimited data file cannot carry a licence header —
 ## its first line is the column header, and a comment line would be read as data.
 ## Provenance is recorded in the README alongside it.
+##
+## Two paths, one file: the app serves the data directory through a symlink
+## (demo/app/data -> ../data), and RAT walks symlinks, so it sees the CSV twice.
 demo/data/*.csv
+demo/app/data/*.csv
 
 
 

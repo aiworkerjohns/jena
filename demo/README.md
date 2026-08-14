@@ -40,6 +40,18 @@ assemble a classpath instead of running the shaded jar. Unlike the Jlama path, n
 App on <http://localhost:8070>, Fuseki on :3040. `task query` runs every file in
 `queries/` from the shell; the app's **Feature tests** tab runs the same files in the browser.
 
+`task check` runs them all and compares each row count with `expected-rows.tsv`. The counts
+are exact rather than "returned something", because most of these queries exist to pin a
+number: `13` returns three recipes and not five because the same-child fold rejects two that
+satisfy each clause separately, and `12` returns none at all because its fields are
+`idx:stored false`. A non-empty check would pass while either silently broke. It also fails
+if a query is not listed, so a new one cannot be added and never checked.
+
+That check is what CI runs (`.github/workflows/demo.yml`), on demo changes **and** on
+`jena-text` changes — a library edit can break this demo with every unit test still green.
+Adding a level to a hierarchy renames its dimension, and a query naming the old name returns
+nothing rather than erroring; that happened while this demo was being written.
+
 **Load and index with the server stopped.** The review children come from a CSV via
 `idx:externalSource`, which makes the shape rebuild-only: a live graph update cannot
 re-derive CSV rows, so the change listener refuses to touch those documents rather than

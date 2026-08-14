@@ -141,6 +141,11 @@ tasks:
             --data-binary @{{.ITEM}}
           echo ""
 
+  check:
+    desc: Run every query and compare row counts with expected-rows.tsv
+    cmds:
+      - ./check.sh {{.SERVER_URL}}
+
   config:
     desc: Show what the server resolved, including the index fingerprint status
     cmds:
