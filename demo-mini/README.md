@@ -58,7 +58,8 @@ access.
 | 4 | Hierarchical faceting, **3 levels** | `idx:facetHierarchy` (root **and** nested) | `04`, `05`, `17`, `19` | Region › country, Reviewer › stars › month |
 | 5 | One field, many paths **and many shapes** | repeated `sh:property` occurrences | `09`, `18` | "People (author or tester)", and the Recipes / Reviewers / Both toggle |
 | 6 | Match projection | `idx:stored` | `11`, `12` | Index view panel, and the "matched on" line |
-| 7 | External CSV, **unstored** | `idx:externalSource` + `idx:stored false` | `12`, `13`, `17` | Reviews panel, and the review list on each card |
+| 7a | Nested children from the **graph** | `idx:nested` + `idx:joinPath` | `20` | Ingredients panel |
+| 7b | Nested children from a **CSV**, unstored | `idx:externalSource` + `idx:stored false` | `12`, `13`, `17` | Reviews panel, and the review list on each card |
 | 8 | Vector search | `idx:VectorField` | `15`, `16` | Semantic mode |
 
 ## One field, three predicates, two shapes
@@ -118,6 +119,49 @@ Three details that matter:
 - **The axis is the data's**, discovered at startup from `MIN`/`MAX` of `kt:publishedOn`
   rather than hardcoded, and a year with no data keeps its slot as a sliver so a gap reads
   as a gap.
+
+## The three sources
+
+Three buttons in the header open one overlay, switchable while open, showing the inputs the
+index is built from — so what is being searched is never a black box:
+
+| | |
+|---|---|
+| **RDF** | `data/kitchen.ttl`, everything that gets indexed |
+| **Index config** | served by Fuseki from `GET /$/config` — the actual file it started with, not a copy beside the app |
+| **Reviews CSV** | `data/reviews.csv`, never loaded into the graph and not stored in the index either |
+
+## Correlation without a CSV: 100g *of chilli*
+
+The reviews demonstrate same-child correlation, but they need an external file to explain.
+Ingredients make the same point with nothing but RDF. Each recipe has `kt:ingredient`
+records carrying an item and a quantity, reached with `idx:joinPath` — the graph-side
+counterpart of the CSV block:
+
+```turtle
+kt:recipe-r08 kt:ingredient
+    [ kt:item kt:ing-chilli ; kt:grams 400 ] ,
+    [ kt:item kt:ing-almond ; kt:grams 150 ] ,
+    [ kt:item kt:ing-chocolate ; kt:grams 20 ] .
+```
+
+Ask for **100g or more of chilli** and the two clauses must land on one record:
+
+| | |
+|---|---|
+| has chilli at all | Green Papaya Salad, Ceviche, Mole Poblano |
+| has any ingredient ≥ 100g | all ten recipes |
+| **≥ 100g of chilli** | **Mole Poblano, and only Mole Poblano** |
+
+The rejected two are the point. Green Papaya Salad has chilli (10g) *and* has a 600g
+ingredient; Ceviche has chilli (5g) *and* a 500g one. Neither has a single record that is
+both, so neither matches — without the fold, "100g of chilli" would quietly mean "some
+chilli, and 100g of anything". Query `20`, and in the app: open **Chilli** in the
+Ingredients panel, see 5g / 10g / 400g, tick 400g.
+
+These fields are `idx:stored true`, unlike the review fields beside them, so
+`luc:nestedMatch` projects the record that matched — chilli, 400g. One nested block of each
+kind, which is what makes the cost of `idx:stored false` legible.
 
 ## The URL is the query
 

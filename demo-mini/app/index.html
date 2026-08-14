@@ -11,8 +11,31 @@
 
 <header>
   <h1>demo-mini <span class="sub">ten recipes, six reviewers, every feature once</span></h1>
+  <nav class="sources">
+    <button data-src="rdf">RDF</button>
+    <button data-src="config">Index config</button>
+    <button data-src="reviews">Reviews CSV</button>
+  </nav>
   <div id="index-status" class="status" title="from GET /$/config/effective">checking index…</div>
 </header>
+
+<!-- One overlay, three sources, switchable while open: the three inputs the index is
+     built from, so what is being searched is never a black box. -->
+<div id="overlay" class="overlay" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="ov-title">
+    <header>
+      <h2 id="ov-title">Sources</h2>
+      <nav class="ov-tabs">
+        <button data-src="rdf">RDF <span>data/kitchen.ttl</span></button>
+        <button data-src="config">Index config <span>GET /$/config</span></button>
+        <button data-src="reviews">Reviews CSV <span>data/reviews.csv</span></button>
+      </nav>
+      <button id="ov-close" title="close (Esc)">×</button>
+    </header>
+    <p id="ov-note" class="hint"></p>
+    <pre id="ov-body">…</pre>
+  </div>
+</div>
 
 <div class="layout">
 

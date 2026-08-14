@@ -37,6 +37,38 @@ kt:country-india     rdfs:label "India"     ; kt:inRegion kt:region-asia .
 kt:country-peru      rdfs:label "Peru"      ; kt:inRegion kt:region-americas .
 kt:country-mexico    rdfs:label "Mexico"    ; kt:inRegion kt:region-americas .
 
+
+## --- Ingredients vocabulary ---
+
+kt:ing-almond       rdfs:label "Almonds" .
+kt:ing-apple        rdfs:label "Apples" .
+kt:ing-beef         rdfs:label "Beef shin" .
+kt:ing-butter       rdfs:label "Butter" .
+kt:ing-carrot       rdfs:label "Carrot" .
+kt:ing-chicken      rdfs:label "Chicken" .
+kt:ing-chilli       rdfs:label "Chilli" .
+kt:ing-chocolate    rdfs:label "Chocolate" .
+kt:ing-cocoa        rdfs:label "Cocoa" .
+kt:ing-dashi        rdfs:label "Dashi" .
+kt:ing-egg          rdfs:label "Egg" .
+kt:ing-espresso     rdfs:label "Espresso" .
+kt:ing-fish         rdfs:label "White fish" .
+kt:ing-lime         rdfs:label "Lime" .
+kt:ing-mascarpone   rdfs:label "Mascarpone" .
+kt:ing-miso         rdfs:label "Miso paste" .
+kt:ing-noodles      rdfs:label "Noodles" .
+kt:ing-papaya       rdfs:label "Green papaya" .
+kt:ing-pastry       rdfs:label "Pastry" .
+kt:ing-peanut       rdfs:label "Peanuts" .
+kt:ing-pecorino     rdfs:label "Pecorino" .
+kt:ing-pepper       rdfs:label "Black pepper" .
+kt:ing-pork         rdfs:label "Pork bones" .
+kt:ing-redwine      rdfs:label "Red wine" .
+kt:ing-spaghetti    rdfs:label "Spaghetti" .
+kt:ing-tofu         rdfs:label "Tofu" .
+kt:ing-tomato       rdfs:label "Tomato" .
+kt:ing-yoghurt      rdfs:label "Yoghurt" .
+
 ## --- Vocabulary: courses and diets ---
 
 kt:course-starter  rdfs:label "Starter" .
@@ -100,7 +132,11 @@ kt:recipe-r01 a kt:Recipe ;
     kt:prepMinutes 240 ;
     kt:publishedOn "2019-03-14"^^xsd:date ;
     kt:author kt:person-ada ;
-    kt:testedBy kt:person-bruno .
+    kt:testedBy kt:person-bruno;
+    kt:ingredient
+        [ kt:item kt:ing-beef ; kt:grams 1200 ] ,
+        [ kt:item kt:ing-redwine ; kt:grams 500 ] ,
+        [ kt:item kt:ing-carrot ; kt:grams 200 ].
 
 kt:recipe-r02 a kt:Recipe ;
     rdfs:label "Tonkotsu Ramen" ;
@@ -111,7 +147,11 @@ kt:recipe-r02 a kt:Recipe ;
     kt:prepMinutes 720 ;
     kt:publishedOn "2019-11-02"^^xsd:date ;
     kt:author kt:person-chika ;
-    kt:testedBy kt:person-ada .
+    kt:testedBy kt:person-ada;
+    kt:ingredient
+        [ kt:item kt:ing-pork ; kt:grams 900 ] ,
+        [ kt:item kt:ing-noodles ; kt:grams 400 ] ,
+        [ kt:item kt:ing-egg ; kt:grams 120 ].
 
 kt:recipe-r03 a kt:Recipe ;
     rdfs:label "Green Papaya Salad" ;
@@ -123,7 +163,11 @@ kt:recipe-r03 a kt:Recipe ;
     kt:prepMinutes 15 ;
     kt:publishedOn "2020-01-20"^^xsd:date ;
     kt:author kt:person-dara ;
-    kt:testedBy kt:person-chika .
+    kt:testedBy kt:person-chika;
+    kt:ingredient
+        [ kt:item kt:ing-papaya ; kt:grams 600 ] ,
+        [ kt:item kt:ing-peanut ; kt:grams 80 ] ,
+        [ kt:item kt:ing-chilli ; kt:grams 10 ].
 
 kt:recipe-r04 a kt:Recipe ;
     schema:name "Chicken Tikka Masala" ;
@@ -134,7 +178,11 @@ kt:recipe-r04 a kt:Recipe ;
     kt:prepMinutes 60 ;
     kt:publishedOn "2020-08-05"^^xsd:date ;
     kt:author kt:person-dara ;
-    kt:testedBy kt:person-bruno .
+    kt:testedBy kt:person-bruno;
+    kt:ingredient
+        [ kt:item kt:ing-chicken ; kt:grams 800 ] ,
+        [ kt:item kt:ing-yoghurt ; kt:grams 200 ] ,
+        [ kt:item kt:ing-tomato ; kt:grams 400 ].
 
 kt:recipe-r05 a kt:Recipe ;
     schema:name "Cacio e Pepe" ;
@@ -146,7 +194,11 @@ kt:recipe-r05 a kt:Recipe ;
     kt:prepMinutes 20 ;
     kt:publishedOn "2021-02-11"^^xsd:date ;
     kt:author kt:person-bruno ;
-    kt:testedBy kt:person-ada .
+    kt:testedBy kt:person-ada;
+    kt:ingredient
+        [ kt:item kt:ing-spaghetti ; kt:grams 400 ] ,
+        [ kt:item kt:ing-pecorino ; kt:grams 150 ] ,
+        [ kt:item kt:ing-pepper ; kt:grams 8 ].
 
 kt:recipe-r06 a kt:Recipe ;
     schema:name "Tiramisu" ;
@@ -158,7 +210,11 @@ kt:recipe-r06 a kt:Recipe ;
     kt:prepMinutes 30 ;
     kt:publishedOn "2021-09-30"^^xsd:date ;
     kt:author kt:person-bruno ;
-    kt:testedBy kt:person-chika .
+    kt:testedBy kt:person-chika;
+    kt:ingredient
+        [ kt:item kt:ing-mascarpone ; kt:grams 500 ] ,
+        [ kt:item kt:ing-espresso ; kt:grams 200 ] ,
+        [ kt:item kt:ing-cocoa ; kt:grams 20 ].
 
 kt:recipe-r07 a kt:Recipe ;
     dcterms:title "Ceviche" ;
@@ -170,7 +226,11 @@ kt:recipe-r07 a kt:Recipe ;
     kt:prepMinutes 25 ;
     kt:publishedOn "2022-01-08"^^xsd:date ;
     kt:author kt:person-ada ;
-    kt:testedBy kt:person-dara .
+    kt:testedBy kt:person-dara;
+    kt:ingredient
+        [ kt:item kt:ing-fish ; kt:grams 500 ] ,
+        [ kt:item kt:ing-lime ; kt:grams 150 ] ,
+        [ kt:item kt:ing-chilli ; kt:grams 5 ].
 
 kt:recipe-r08 a kt:Recipe ;
     dcterms:title "Mole Poblano" ;
@@ -181,7 +241,11 @@ kt:recipe-r08 a kt:Recipe ;
     kt:prepMinutes 300 ;
     kt:publishedOn "2022-10-19"^^xsd:date ;
     kt:author kt:person-chika ;
-    kt:testedBy kt:person-dara .
+    kt:testedBy kt:person-dara;
+    kt:ingredient
+        [ kt:item kt:ing-chilli ; kt:grams 400 ] ,
+        [ kt:item kt:ing-almond ; kt:grams 150 ] ,
+        [ kt:item kt:ing-chocolate ; kt:grams 20 ].
 
 kt:recipe-r09 a kt:Recipe ;
     rdfs:label "Tarte Tatin" ;
@@ -193,7 +257,11 @@ kt:recipe-r09 a kt:Recipe ;
     kt:prepMinutes 90 ;
     kt:publishedOn "2023-04-02"^^xsd:date ;
     kt:author kt:person-ada ;
-    kt:testedBy kt:person-bruno .
+    kt:testedBy kt:person-bruno;
+    kt:ingredient
+        [ kt:item kt:ing-apple ; kt:grams 900 ] ,
+        [ kt:item kt:ing-butter ; kt:grams 150 ] ,
+        [ kt:item kt:ing-pastry ; kt:grams 250 ].
 
 kt:recipe-r10 a kt:Recipe ;
     dcterms:title "Miso Soup" ;
@@ -205,7 +273,11 @@ kt:recipe-r10 a kt:Recipe ;
     kt:prepMinutes 10 ;
     kt:publishedOn "2024-06-15"^^xsd:date ;
     kt:author kt:person-chika ;
-    kt:testedBy kt:person-ada .
+    kt:testedBy kt:person-ada;
+    kt:ingredient
+        [ kt:item kt:ing-dashi ; kt:grams 700 ] ,
+        [ kt:item kt:ing-miso ; kt:grams 60 ] ,
+        [ kt:item kt:ing-tofu ; kt:grams 200 ].
 
 ## --- Labels for the index fields themselves ---
 ##
@@ -230,6 +302,8 @@ field:contributor  rdfs:label "Person" .
 field:prepMinutes  rdfs:label "Prep time" .
 field:publishedOn  rdfs:label "Published" .
 field:embedding    rdfs:label "Embedding" .
+field:ingredient       rdfs:label "Ingredient" .
+field:ingredientGrams  rdfs:label "Quantity" .
 field:reviewer     rdfs:label "Reviewer" .
 field:stars        rdfs:label "Stars" .
 field:reviewMonth  rdfs:label "Review month" .

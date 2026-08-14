@@ -195,6 +195,28 @@ field:embedding
     idx:similarity idx:Cosine ;
     idx:embeddingSource ( field:name field:summary ) .
 
+## --- FEATURE 7 (graph side) — a nested block whose children come from the GRAPH ---
+##
+## These two are child-scoped, exactly like the CSV review fields, but their children are
+## reached with idx:joinPath instead of idx:externalSource. Stored, so luc:nestedMatch can
+## project the ingredient record that matched — the CSV block deliberately does the
+## opposite, and having one of each shows what idx:stored actually costs.
+
+field:ingredient
+    idx:fieldName "ingredient" ;
+    idx:fieldType idx:KeywordField ;
+    idx:stored true ;
+    idx:indexed true ;
+    idx:facetable true .
+
+field:ingredientGrams
+    idx:fieldName "ingredientGrams" ;
+    idx:fieldType idx:IntField ;
+    idx:stored true ;
+    idx:indexed true ;
+    idx:facetable true ;
+    idx:sortable true .
+
 ## --- FEATURE 7 — fields bound to CSV columns ---
 ## These carry no sh:path. A field is "external" because a column binds it, nothing else.
 ## None of these values exist anywhere in the RDF graph.
@@ -286,6 +308,22 @@ field:reviewMonth
 
     ## FEATURE 8 — no sh:path, so it attaches here.
     idx:vectorField field:embedding ;
+
+    ## FEATURE 7 — children from the GRAPH. Each kt:ingredient record carries an item and
+    ## a quantity, and the paths inside the block are relative to the CHILD node, so
+    ## kt:item is read from each ingredient record rather than from the recipe.
+    ##
+    ## This is the correlation that needs no external file to explain: "100g of chocolate"
+    ## must be satisfied by ONE ingredient record. A recipe with 20g of chocolate and 400g
+    ## of chilli has chocolate, and has an ingredient over 100g, and is not a match.
+    ##
+    ## No idx:nestedName: for an idx:joinPath block the scope name is derived from the path.
+    idx:nested [
+        idx:joinPath kt:ingredient ;
+        idx:property [ idx:field field:ingredient      ; sh:path kt:item ] ;
+        idx:property [ idx:field field:ingredientGrams ; sh:path kt:grams ] ;
+        idx:facetHierarchy ( field:ingredient field:ingredientGrams ) ;
+    ] ;
 
     ## FEATURE 7 — children from a CSV that is never loaded into the graph, joined on the
     ## recipe IRI. All three bound columns land on the SAME child, so they correlate:

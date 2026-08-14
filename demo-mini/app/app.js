@@ -47,6 +47,15 @@ const DIMS = {
         fields: [F('region'), F('country')],
         label: 'iri',
     },
+    ingredient: {
+        key: 'ingredient_ingredientGrams',
+        title: 'Ingredients',
+        note: 'children from the graph, not a file — drill an ingredient to see its quantities',
+        fields: [F('ingredient'), F('ingredientGrams')],
+        label: 'iri',
+        // grams is an IntField; "=" on the string the facet returns would match nothing.
+        cast: [null, Number],
+    },
     review: {
         key: 'reviewer_stars_reviewMonth',
         title: null,                      // rendered in its own group in index.html
@@ -73,7 +82,7 @@ const TESTS = [
     '09-fanin-contributor', '10-keyword-iri-filter', '11-match', '12-nested-match-reviews',
     '13-nested-correlation', '14-sort-and-page', '15-vector-search', '16-vector-filtered',
     '17-nested-hierarchy-correlated', '18-one-field-many-paths-many-shapes',
-    '19-three-level-drilldown',
+    '19-three-level-drilldown', '20-ingredient-quantity-correlated',
 ];
 
 const state = {
@@ -87,7 +96,8 @@ const state = {
      *           sets depth to i+1; the twisty leaves depth alone.
      * Keeping them apart is what lets a node be opened without being filtered by.
      */
-    drill: { region: { path: [], depth: 0 }, review: { path: [], depth: 0 } },
+    drill: { region: { path: [], depth: 0 }, ingredient: { path: [], depth: 0 },
+             review: { path: [], depth: 0 } },
     // null = both kinds. Only two shapes exist, so "both" is genuinely the absence of a
     // filter rather than an "in" of every class.
     kind: null,
@@ -551,6 +561,80 @@ function renderDateHistogram(res) {
     if (el('year-clear')) el('year-clear').onclick = () => { state.yearIdx = null; state.page = 0; run(); };
 }
 
+/* ── the sources overlay ───────────────────────────────────────────────── */
+
+/*
+ * The three inputs the index is built from, so what is being searched is never a black box:
+ * the RDF that gets indexed, the configuration that decides how, and the CSV that is joined
+ * in at build time but never enters the graph.
+ *
+ * The config comes from the server's own /$/config endpoint rather than a copy served
+ * beside the app — it is the file Fuseki actually read, which is the only version worth
+ * showing. The other two are static files served next to the app.
+ */
+const SOURCES = {
+    rdf: {
+        title: 'data/kitchen.ttl',
+        note: 'Everything the index is built from. Ten recipes, six reviewers, and the '
+            + 'vocabularies their IRIs point at. Note the recipe names: some are rdfs:label, '
+            + 'some schema:name, some dcterms:title — all three feed one index field.',
+        url: 'data/kitchen.ttl',
+    },
+    config: {
+        title: 'config.ttl, as the server read it',
+        note: 'Served by Fuseki from GET /$/config — the actual file it started with, not a '
+            + 'copy. Fields are declared once and path-free; the sh:property occurrences on '
+            + 'each shape decide what feeds them.',
+        url: `${BASE}/$/config`,
+    },
+    reviews: {
+        title: 'data/reviews.csv',
+        note: 'Never loaded into the graph, and its values are not in the index either — '
+            + 'the review fields are idx:stored false. The index can filter and count on '
+            + 'these rows; the app reads the file itself to display them.',
+        url: 'data/reviews.csv',
+    },
+};
+
+const sourceCache = new Map();
+
+async function showSource(id) {
+    const src = SOURCES[id];
+    if (!src) return;
+    el('overlay').hidden = false;
+    el('ov-title').textContent = src.title;
+    el('ov-note').textContent = src.note;
+    document.querySelectorAll('.ov-tabs button').forEach(b =>
+        b.classList.toggle('on', b.dataset.src === id));
+
+    if (!sourceCache.has(id)) {
+        el('ov-body').textContent = 'loading…';
+        try {
+            const r = await fetch(src.url);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            sourceCache.set(id, await r.text());
+        } catch (err) {
+            el('ov-body').textContent = `could not load ${src.url}\n${err.message}`;
+            return;
+        }
+    }
+    el('ov-body').textContent = sourceCache.get(id);
+    el('ov-body').scrollTop = 0;
+}
+
+function wireOverlay() {
+    document.querySelectorAll('.sources button, .ov-tabs button').forEach(b => {
+        b.onclick = () => showSource(b.dataset.src);
+    });
+    const close = () => { el('overlay').hidden = true; };
+    el('ov-close').onclick = close;
+    // Click the backdrop, not the sheet.
+    el('overlay').onclick = ev => { if (ev.target === el('overlay')) close(); };
+    document.addEventListener('keydown', ev => {
+        if (ev.key === 'Escape' && !el('overlay').hidden) close();
+    });
+}
+
 /* ── the URL is the query ──────────────────────────────────────────────── */
 
 /*
@@ -962,9 +1046,12 @@ async function renderFacets(res) {
     el('facet-reviewer').innerHTML = renderDrill('review', levels.review || [], L);
 
     let html = '';
-    if ((levels.region?.[0] || []).length) {
-        html += `<div class="facet-group"><h3>${esc(DIMS.region.title)}</h3>`
-            + renderDrill('region', levels.region, L) + `</div>`;
+    for (const [id, dim] of Object.entries(DIMS)) {
+        // `review` has its own group in index.html, next to the min-stars control.
+        if (!dim.title || !(levels[id]?.[0] || []).length) continue;
+        html += `<div class="facet-group"><h3>${esc(dim.title)}</h3>`
+            + (dim.note ? `<p class="hint">${esc(dim.note)}</p>` : '')
+            + renderDrill(id, levels[id], L) + `</div>`;
     }
     for (const f of FACETS) {
         const list = groups.get(f.key) || [];
@@ -1007,8 +1094,10 @@ function renderDrill(id, levels, L, level = 0) {
     const list = levels[level] || [];
     if (!list.length) return '';
     const { path, depth } = state.drill[id];
-    const text = v => dim.label === 'iri' ? esc(L(v))
-        : dim.fields[level] === F('stars') ? `<span class="stars">${'★'.repeat(Number(v) || 0)}</span>`
+    const text = v => dim.fields[level] === F('stars')
+            ? `<span class="stars">${'★'.repeat(Number(v) || 0)}</span>`
+        : dim.fields[level] === F('ingredientGrams') ? `${esc(v)} g`
+        : dim.label === 'iri' ? esc(L(v))
         : esc(v);
 
     return `<ul${level ? ' class="hier-children"' : ''}>` + list.map(x => {
@@ -1217,7 +1306,13 @@ async function loadConfig() {
         // values, which this client does not get to decide.
         kinds.classes = [...new Set((ds.profiles || []).flatMap(p => p.targetClasses || []))];
 
-        const hiers = ds.profiles?.[0]?.hierarchies || [];
+        // NOTE: /$/config/effective reports only ROOT hierarchies — it walks
+        // profile.getHierarchies(), and a hierarchy declared inside an idx:nested block
+        // hangs off the nested def instead. So region_country is discovered here and the
+        // two nested dimensions fall back to the names hardcoded in DIMS. Those names are
+        // derived by joining level fieldNames with "_", so they are stable, but this is the
+        // one place the client is asserting something the server could tell it.
+        const hiers = ds.profiles?.flatMap(pr => pr.hierarchies || []) || [];
         const byLevel = name => hiers.find(h => (h.levels || []).includes(name))?.dimension;
         const regionDim = byLevel('region');
         if (regionDim) DIMS.region.key = regionDim;
@@ -1225,7 +1320,8 @@ async function loadConfig() {
         if (reviewDim) DIMS.review.key = reviewDim;
         badge.textContent = `index ${status} · ${nFields} fields`;
         badge.className = 'status ' + (status === 'MATCH' ? 'ok' : status === 'MISMATCH' ? 'bad' : 'warn');
-        badge.title = `GET /$/config/effective\nfingerprint ${status}\nbuilt ${ds.index?.builtAt || '?'}\nhierarchy: ${dim || 'none'}`;
+        badge.title = `GET /$/config/effective\nfingerprint ${status}\nbuilt ${ds.index?.builtAt || '?'}\n`
+            + `root hierarchies: ${hiers.map(h => h.dimension).join(', ') || 'none'}`;
     } catch (err) {
         badge.textContent = 'config endpoint unavailable';
         badge.className = 'status warn';
@@ -1254,7 +1350,8 @@ function wireChrome() {
         Object.assign(state, {
             q: '', mode: 'bm25', sort: '', page: 0,
             sel: {}, kind: null, yearIdx: null, minStars: '', prepBucket: null,
-            drill: { region: { path: [], depth: 0 }, review: { path: [], depth: 0 } },
+            drill: { region: { path: [], depth: 0 }, ingredient: { path: [], depth: 0 },
+                     review: { path: [], depth: 0 } },
         });
         el('q').value = ''; el('mode').value = 'bm25'; el('sort').value = '';
         el('min-stars').value = '';
@@ -1264,6 +1361,7 @@ function wireChrome() {
 
 (async function main() {
     wireChrome();
+    wireOverlay();
     renderTestList();
     // The axis must exist before a ?filter= date range can be read back into slider indices,
     // and the dimension names before a drill path can be matched to its levels.
