@@ -425,6 +425,32 @@ index or the taxonomy — `task up` regenerates all of it in a couple of seconds
 `idx:dimension 64` on `field:embedding`; it compares words rather than meaning, and
 demonstrates the plumbing only.
 
+## Almost nothing is stored
+
+`idx:stored` defaults to **true**, and this config turns it off on ten of eighteen fields.
+Filtering, faceting, sorting and range queries read points and docvalues, never the stored
+copy — so storing costs nothing but *projection*, and the graph already holds the values
+(the app reads them from there, see [The record beside each card](#the-record-beside-each-card)).
+
+Only two kinds of field are stored:
+
+| Stored | Why |
+|---|---|
+| `name`, `summary` | searchable TEXT — `luc:match` shows *which* field matched and with what |
+| `ingredient`, `ingredientGrams` | `luc:nestedMatch` projects the record that matched (query `20`) |
+
+Everything else — the vocabulary terms, the hierarchy levels, the entity class, the code,
+the prep time, the date — is `idx:stored false`. Verified after the change: facet values
+still bind, range facets still bucket, sort still orders, and all twenty queries still
+return their expected counts. `codeText` is worth singling out: it had no `idx:stored` line
+at all, so it was defaulting to stored, and an n-gram field is never projected — `luc:match`
+reports what the *query string* matched, and that field is reached through a `text_query` in
+the `cqlFilter` instead.
+
+Do not read a size saving into this at ten recipes; the index is 64K either way. The point
+is the rule, which is [doc 10](../docs/10-suggested-configuration.md): store a field only
+when `luc:match` or `luc:nestedMatch` must project it.
+
 ## Two behaviours worth knowing
 
 **Hierarchical facets are addressed by dimension name, not field IRI.** Everything else in
