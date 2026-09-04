@@ -132,6 +132,11 @@ public class TestSpatialFiltering {
             addSite(model, "auckland", "Auckland Site",
                 "<http://www.opengis.net/def/crs/EPSG/0/4326> POINT(-36.85 174.76)");
 
+            // Sits inside the ring body of the donut query polygon used below, i.e.
+            // within the outer ring but outside the hole. Boddington sits in the hole.
+            addSite(model, "ring-body", "Ring Body Site",
+                "<http://www.opengis.net/def/crs/EPSG/0/4326> POINT(-32.77 116.95)");
+
             dataset.commit();
         } finally {
             dataset.end();
@@ -339,5 +344,62 @@ public class TestSpatialFiltering {
             ShaclTextIndexLucene.parseWktToLuceneFields("location", "NOT_WKT", false);
 
         assertTrue("Invalid WKT should produce empty fields", fields.isEmpty());
+    }
+
+    // ------------------------------------------------------------------
+    // Interior rings (holes) in a GeoJSON query polygon
+    // ------------------------------------------------------------------
+
+    /**
+     * A donut centred on Boddington: outer ring roughly +/-1 degree, hole roughly
+     * +/-0.2 degrees. GeoJSON rings are [lon, lat]; ring 0 is the shell, rings 1..n
+     * are holes.
+     */
+    private static final String DONUT_AROUND_BODDINGTON =
+        "{\"type\":\"Polygon\",\"coordinates\":["
+        + "[[115.35,-33.77],[117.35,-33.77],[117.35,-31.77],[115.35,-31.77],[115.35,-33.77]],"
+        + "[[116.15,-32.97],[116.55,-32.97],[116.55,-32.57],[116.15,-32.57],[116.15,-32.97]]"
+        + "]}";
+
+    @Test
+    public void testQueryPolygonHoleExcludesEntityInsideHole() {
+        CqlExpression filter = new CqlExpression.CqlSpatial(
+            "s_intersects", FP + "location", DONUT_AROUND_BODDINGTON);
+
+        List<TextHit> results = textIndex.queryWithCql(
+            null, "*", filter, null, null, null, 100, null);
+        Set<String> uris = new HashSet<>();
+        for (TextHit hit : results) {
+            uris.add(hit.getNode().getURI());
+        }
+
+        assertFalse("Boddington sits in the hole and must not match",
+            uris.contains(NS + "boddington"));
+        assertTrue("A site in the ring body must still match",
+            uris.contains(NS + "ring-body"));
+    }
+
+    @Test
+    public void testQueryPolygonWithTwoHoles() {
+        // Two holes: one over Boddington, one over the ring-body site. Both are excluded,
+        // proving rings 1..n are all applied rather than only the first.
+        String twoHoles =
+            "{\"type\":\"Polygon\",\"coordinates\":["
+            + "[[115.35,-33.77],[117.35,-33.77],[117.35,-31.77],[115.35,-31.77],[115.35,-33.77]],"
+            + "[[116.15,-32.97],[116.55,-32.97],[116.55,-32.57],[116.15,-32.57],[116.15,-32.97]],"
+            + "[[116.75,-32.97],[117.15,-32.97],[117.15,-32.57],[116.75,-32.57],[116.75,-32.97]]"
+            + "]}";
+        CqlExpression filter = new CqlExpression.CqlSpatial(
+            "s_intersects", FP + "location", twoHoles);
+
+        List<TextHit> results = textIndex.queryWithCql(
+            null, "*", filter, null, null, null, 100, null);
+        Set<String> uris = new HashSet<>();
+        for (TextHit hit : results) {
+            uris.add(hit.getNode().getURI());
+        }
+
+        assertFalse("Boddington sits in the first hole", uris.contains(NS + "boddington"));
+        assertFalse("Ring-body site sits in the second hole", uris.contains(NS + "ring-body"));
     }
 }
