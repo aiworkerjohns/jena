@@ -221,8 +221,23 @@ put the shape in the Gulf of Guinea.
 Run the parser's tests with no extra dependencies:
 
 ```bash
-node --test testing/wkt.test.mjs
+task test-wkt
 ```
+
+### Checking the examples still work
+
+```bash
+task FUSEKI_PORT=3031 check-examples
+```
+
+Replays every example in `test/tests.json` through the app's own filter pipeline and runs
+the result against a running Fuseki. It asserts three things, the last of which is the one
+that matters: the filter survives the URL round trip, it is still present after the query
+is rebuilt, and **it actually changes the result set**.
+
+Three demo bugs shared the same symptom — an example that looked fine and quietly returned
+everything. A check that only asserts the query succeeds, or that it clears `minResults`,
+passes in all three cases, because an unfiltered query does both.
 
 ### Expected results for path queries
 
