@@ -84,6 +84,7 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
 import org.locationtech.jts.geom.*;
+import org.locationtech.jts.geom.util.AffineTransformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -1575,7 +1576,11 @@ public class ShaclTextIndexLucene extends TextIndexLucene {
      *   <li>GDA94/GDA2020 (EPSG:4283/7844) — treated as WGS84-equivalent</li>
      *   <li>Other CRS — transformed to WGS84 via {@link GeometryWrapper#convertSRS}</li>
      * </ul>
-     * Supports Point, Polygon, and MultiPolygon geometries.
+     * Supports every JTS geometry type: Point, LineString, LinearRing, Polygon,
+     * MultiPoint, MultiLineString, MultiPolygon and GeometryCollection.
+     * <p>
+     * Note that Lucene does not split geometries at the antimeridian; a line or polygon
+     * spanning +/-180 degrees is indexed as Lucene reads it.
      */
     static List<IndexableField> parseWktToLuceneFields(String fieldName, String wktValue, boolean stored) {
         List<IndexableField> fields = new ArrayList<>();
@@ -1597,26 +1602,18 @@ public class ShaclTextIndexLucene extends TextIndexLucene {
             // getXYGeometry() normalises all CRSes to x=lon, y=lat (standard JTS convention)
             Geometry geom = wrapper.getXYGeometry();
 
-            if (geom instanceof Point point) {
-                double lat = point.getY();
-                double lon = point.getX();
-                Collections.addAll(fields, LatLonShape.createIndexableFields(fieldName, lat, lon));
-            } else if (geom instanceof org.locationtech.jts.geom.Polygon jtsPoly) {
-                org.apache.lucene.geo.Polygon lucenePoly = jtsPolygonToLucene(jtsPoly);
-                Collections.addAll(fields, LatLonShape.createIndexableFields(fieldName, lucenePoly));
-            } else if (geom instanceof MultiPolygon multiPolygon) {
-                for (int i = 0; i < multiPolygon.getNumGeometries(); i++) {
-                    org.locationtech.jts.geom.Polygon jtsPoly =
-                        (org.locationtech.jts.geom.Polygon) multiPolygon.getGeometryN(i);
-                    org.apache.lucene.geo.Polygon lucenePoly = jtsPolygonToLucene(jtsPoly);
-                    Collections.addAll(fields, LatLonShape.createIndexableFields(fieldName, lucenePoly));
-                }
-            } else {
-                log.warn("Unsupported geometry type for LATLON field '{}': {}", fieldName, geom.getGeometryType());
-                return fields;
+            // ... but only for a CRS Apache SIS recognises. It does not recognise GDA2020
+            // or GDA94, so those arrive still in lat/lon and must be swapped here.
+            if (WGS84_EQUIVALENT_LATLON_CRS.contains(srsUri)
+                    && !wrapper.getSrsInfo().isSRSRecognised()) {
+                geom = swapAxisOrder(geom);
             }
 
-            if (stored) {
+            addGeometryFields(fields, fieldName, geom);
+
+            // Only store the literal if something was actually indexed, so a geometry we
+            // could not index is not left retrievable but unsearchable.
+            if (stored && !fields.isEmpty()) {
                 fields.add(new StoredField(fieldName, wktValue));
             }
         } catch (Exception e) {
@@ -1626,11 +1623,82 @@ public class ShaclTextIndexLucene extends TextIndexLucene {
         return fields;
     }
 
+    /**
+     * Append Lucene shape fields for {@code geom}, recursing into collections.
+     * <p>
+     * Four cases cover all eight JTS types: {@code LinearRing} is a {@code LineString},
+     * and {@code MultiPoint}, {@code MultiLineString} and {@code MultiPolygon} are all
+     * {@code GeometryCollection} subclasses. Coordinates arrive from
+     * {@code getXYGeometry()} as x=lon, y=lat.
+     */
+    private static void addGeometryFields(List<IndexableField> fields, String fieldName, Geometry geom) {
+        if (geom instanceof Point point) {
+            Collections.addAll(fields,
+                LatLonShape.createIndexableFields(fieldName, point.getY(), point.getX()));
+        } else if (geom instanceof LineString lineString) {
+            Collections.addAll(fields,
+                LatLonShape.createIndexableFields(fieldName, jtsLineToLucene(lineString)));
+        } else if (geom instanceof org.locationtech.jts.geom.Polygon jtsPoly) {
+            Collections.addAll(fields,
+                LatLonShape.createIndexableFields(fieldName, jtsPolygonToLucene(jtsPoly)));
+        } else if (geom instanceof GeometryCollection collection) {
+            for (int i = 0; i < collection.getNumGeometries(); i++) {
+                addGeometryFields(fields, fieldName, collection.getGeometryN(i));
+            }
+        } else {
+            log.warn("Unsupported geometry type for LATLON field '{}': {}", fieldName, geom.getGeometryType());
+        }
+    }
+
+    /** Convert a JTS LineString (x=lon, y=lat from getXYGeometry) to a Lucene Line. */
+    private static org.apache.lucene.geo.Line jtsLineToLucene(LineString lineString) {
+        Coordinate[] coords = lineString.getCoordinates();
+        double[] lats = new double[coords.length];
+        double[] lons = new double[coords.length];
+        for (int i = 0; i < coords.length; i++) {
+            lats[i] = coords[i].y;  // y = lat
+            lons[i] = coords[i].x;  // x = lon
+        }
+        return new org.apache.lucene.geo.Line(lats, lons);
+    }
+
+    /**
+     * Geographic CRSes whose coordinates are WGS84-equivalent to within the resolution
+     * this index cares about, so no datum transformation is applied.
+     * <p>
+     * EPSG publishes the GDA2020 to WGS 84 transformation as a null transformation, and
+     * Lucene quantises coordinates to roughly a centimetre, so a transform would be
+     * arithmetic with no effect. Both are lat/lon (EPSG axis order), like EPSG:4326.
+     */
+    private static final Set<String> WGS84_EQUIVALENT_LATLON_CRS = Set.of(
+        "http://www.opengis.net/def/crs/EPSG/0/4283",   // GDA94
+        "http://www.opengis.net/def/crs/EPSG/0/7844");  // GDA2020
+
     private static boolean isWgs84OrCrs84(String srsUri) {
         return SRS_URI.DEFAULT_WKT_CRS84.equals(srsUri)
             || SRS_URI.WGS84_CRS.equals(srsUri)
-            || "http://www.opengis.net/def/crs/EPSG/0/4283".equals(srsUri)
-            || "http://www.opengis.net/def/crs/EPSG/0/7844".equals(srsUri);
+            || WGS84_EQUIVALENT_LATLON_CRS.contains(srsUri);
+    }
+
+    /**
+     * Swap x and y on a copy of {@code geom}.
+     * <p>
+     * {@link GeometryWrapper#getXYGeometry()} normalises axis order only for a CRS that
+     * Apache SIS recognises. SIS as bundled does not recognise GDA2020 (EPSG:7844) or
+     * GDA94 (EPSG:4283), so it leaves their lat/lon coordinates untouched and a
+     * longitude arrives where Lucene expects a latitude. That failed the
+     * {@code -90..90} check, and the geometry was dropped with only a warning — the
+     * entity indexed with no location at all.
+     * <p>
+     * Guarded on {@code isSRSRecognised()} so that if a future SIS does recognise these
+     * CRSes and swaps the axes itself, this does not swap them back.
+     */
+    private static Geometry swapAxisOrder(Geometry geom) {
+        // Reflection about the line y = x maps (a, b) to (b, a). Done as an affine
+        // transformation rather than a CoordinateFilter because jena-geosparql builds
+        // geometries on a packed coordinate sequence, whose getCoordinate() hands back a
+        // copy -- mutating it silently does nothing.
+        return new AffineTransformation().reflect(1, 1).transform(geom);
     }
 
     /** Convert a JTS Polygon (x=lon, y=lat from getXYGeometry) to a Lucene Polygon. */

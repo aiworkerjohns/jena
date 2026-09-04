@@ -26,11 +26,29 @@ field:location
 
 ## Supported geometry types
 
-- **Point** — `POINT(x y)`
-- **Polygon** — `POLYGON((x1 y1, x2 y2, ...))` (with optional holes)
-- **MultiPolygon** — `MULTIPOLYGON(((...)), ((...)), ...)` indexed as multiple polygons on the same Lucene field
+All eight JTS geometry types are indexed:
 
-Other geometry types (MultiPoint, LineString, etc.) are logged as warnings and skipped during indexing.
+| WKT | Notes |
+|---|---|
+| `POINT(x y)` | |
+| `LINESTRING(x1 y1, x2 y2, ...)` | a line has no interior, so a region strictly inside a closed ring drawn as a `LINESTRING` does not intersect it |
+| `POLYGON((...))` | interior rings (holes) are honoured |
+| `MULTIPOINT((x1 y1), (x2 y2), ...)` | |
+| `MULTILINESTRING((...), (...))` | |
+| `MULTIPOLYGON(((...)), ((...)))` | |
+| `GEOMETRYCOLLECTION(...)` | members are indexed recursively, so collections may nest |
+
+Members of a collection are indexed onto the same Lucene field, so an entity matches if
+any member matches. A geometry that cannot be indexed is logged as a warning and skipped,
+and in that case the WKT is **not** stored either — an entity is never left with a
+retrievable geometry that no spatial filter can find.
+
+### Antimeridian
+
+Lucene does not split geometries at the antimeridian. A line written from longitude 179
+to −179 is read as spanning the long way round the globe, not the two-degree short hop.
+Split such geometries into two parts before loading if the short crossing is what you
+mean.
 
 ## CRS handling
 
@@ -40,9 +58,33 @@ Lucene indexes all coordinates in WGS84 (latitude/longitude in degrees). The ind
 |---|---|---|
 | Bare WKT (no prefix) | lon, lat (CRS84 default) | Automatic axis normalisation |
 | `<http://www.opengis.net/def/crs/EPSG/0/4326>` | lat, lon | Used directly |
-| `<http://www.opengis.net/def/crs/EPSG/0/4283>` (GDA94) | lat, lon | Used directly |
-| `<http://www.opengis.net/def/crs/EPSG/0/7844>` (GDA2020) | lat, lon | Used directly |
+| `<http://www.opengis.net/def/crs/EPSG/0/4283>` (GDA94) | lat, lon | Axes swapped, no datum transform |
+| `<http://www.opengis.net/def/crs/EPSG/0/7844>` (GDA2020) | lat, lon | Axes swapped, no datum transform |
 | Other CRS (e.g. EPSG:28350) | Varies | Transformed to WGS84 via Apache SIS |
+
+### Why GDA2020 and GDA94 get no datum transform
+
+EPSG publishes the GDA2020 to WGS 84 transformation as a **null transformation**: the
+coordinates are identical. WGS84 is defined only to about a metre, GDA2020 is ITRF2014 at
+epoch 2020.0, and Lucene quantises to roughly a centimetre, so applying a transform would
+be arithmetic with no effect. Both are treated as WGS84-equivalent and only the axis order
+is corrected.
+
+The axis swap is done explicitly rather than left to `GeometryWrapper`. Apache SIS as
+bundled does not recognise either CRS, so `getXYGeometry()` returns their lat/lon
+coordinates untouched. Before this was fixed, a longitude arrived where Lucene expects a
+latitude, failed the -90..90 check, and the geometry was discarded with only a warning —
+the entity indexed with no location and could never match a spatial filter.
+
+If you hold GDA2020 data, **keep the `<...EPSG/0/7844>` prefix** on `geo:asWKT`. Dropping
+it to make bare CRS84 asserts a datum your data is not in.
+
+Clients then have to strip that prefix themselves, because no general-purpose WKT library
+understands the `<crs-iri> GEOMETRY(...)` form and the axis order depends on the CRS. The
+demo does this in `demo/app-static/wkt.js`, which is a usable reference: it strips the
+prefix, maps EPSG:4326, 4283 and 7844 to lat/lon and bare or CRS84 literals to lon/lat,
+handles every geometry type including polygon holes, and returns nothing for a projected
+CRS rather than drawing metres as degrees.
 
 ### Examples in data
 
