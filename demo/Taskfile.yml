@@ -167,6 +167,12 @@ tasks:
             --data-binary @{{.ITEM}}
           echo ""
 
+  test-wkt:
+    desc: Unit-test the browser WKT parser (Node's built-in runner, no deps)
+    dir: testing
+    cmds:
+      - node --test wkt.test.mjs
+
   test:
     desc: Run Playwright screenshot tests and generate report
     dir: testing
