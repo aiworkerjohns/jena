@@ -1216,7 +1216,13 @@ LIMIT 100`);
          */
         async applyExample(ex) {
             this.activeExampleId = ex.id;
-            const qs = (ex.params || '').replace(/^\?/, '');
+            const raw = (ex.params || '').replace(/^\?/, '');
+            // Re-encode before pushing. The params in tests.json are written unescaped
+            // for legibility, but a field IRI such as urn:jena:lucene:field#location
+            // contains a '#', which starts the URL fragment: location.search would be
+            // truncated mid-string, loadFromUrl would see invalid JSON, and the example
+            // would silently run with no filter at all. URLSearchParams escapes it.
+            const qs = raw ? new URLSearchParams(raw).toString() : '';
             window.history.pushState({}, '', qs ? `?${qs}` : window.location.pathname);
             this.loadFromUrl();
             await this.executeSearch();
