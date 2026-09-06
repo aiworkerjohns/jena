@@ -173,6 +173,12 @@ tasks:
     cmds:
       - node --test wkt.test.mjs
 
+  check-examples:
+    desc: Replay every tests.json example against a running Fuseki (catches inert filters)
+    dir: testing
+    cmds:
+      - FUSEKI_PORT={{.FUSEKI_PORT}} node --test check-examples.mjs
+
   test:
     desc: Run Playwright screenshot tests and generate report
     dir: testing
